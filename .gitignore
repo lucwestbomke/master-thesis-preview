@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Scaffold artifacts
+*.zip
+
+# Experiment outputs
+wandb/
+outputs/            # hydra run dirs
+runs/
+checkpoints/
+*.pt
+*.ckpt
+videos/
+
+# Cached OSM assets (regenerate via scripts/prep_osm.py)
+data/cache/
+*.graphml
