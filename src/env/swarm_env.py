@@ -25,7 +25,21 @@ import torch
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
-OBS_DIM = 13  # kinematics, battery, tracking metrics, ambient noise floor
+# Ego observation. Agent-local only -- global state belongs to the critic.
+# Breakdown (see AGENTS.md "Observations"):
+#   3  own velocity          3  relative vector to HVT
+#   1  own altitude          3  relative velocity of HVT
+#   1  battery               3  relative vector to MCV
+#   1  sees HVT (soft)       1  measured noise floor
+#   1  clearance to HVT      1  clearance to MCV
+#   1  on relay path         1  current e2e capacity
+#   1  steps since link OK
+OBS_DIM = 21
+# Per-neighbour: rel pos (3), rel vel (3), battery, sees_hvt, on_path.
+NEIGHBOUR_DIM = 9
+# Per-edge: link capacity, ray clearance margin. The GNN's only extra input
+# over DeepSets -- this is the rung RQ2 tests.
+EDGE_DIM = 2
 # Motion only. Transmit power is fixed at 30 dBm -- adaptive Ptx was tested
 # against fair baselines under three separate justifications (energy,
 # interference, detectability) and came out null each time. See
@@ -136,7 +150,7 @@ class SwarmRelayEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def _build_observation(self, agent_idx: int) -> np.ndarray:
-        # TODO: assemble the 13-dim vector — local kinematics, battery,
+        # TODO: assemble the 21-dim ego vector — local kinematics, battery,
         # target tracking metrics (distance/FoV/occlusion to HVT), ambient
         # noise floor. Keep this agent-local (decentralized execution —
         # don't leak global state here; that's the critic's job).

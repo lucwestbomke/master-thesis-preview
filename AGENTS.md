@@ -207,6 +207,84 @@ but flight energy is what the policy actually controls.
 
 ---
 
+## Observations
+
+**Rule: the actor may only see what a real drone could sense or receive.** Global
+state belongs to the critic. Violating this quietly turns decentralized execution
+into centralized execution and invalidates the whole CTDE framing.
+
+### Actor — ego features (21)
+| Feature | Dims | Realizable from |
+|---|---|---|
+| own velocity | 3 | INS |
+| own altitude | 1 | absolute — LoS geometry depends on it |
+| battery | 1 | |
+| sees HVT (soft flag) | 1 | own sensor |
+| relative vector to HVT | 3 | own sensor; zeroed when not seen |
+| **relative velocity of HVT** | 3 | own sensor — without this the drone cannot anticipate |
+| relative vector to MCV | 3 | MCV position is fixed and briefed |
+| measured noise floor | 1 | **how the drone senses the jammer** |
+| clearance margin to HVT | 1 | signed metres the ray clears the roofline |
+| clearance margin to MCV | 1 | ditto |
+| on active relay path | 1 | routing layer |
+| current e2e capacity | 1 | reported back down the chain |
+| steps since link last OK | 1 | proximity to episode failure |
+
+### Actor — per-neighbour features (9 × N−1)
+Relative position (3), relative velocity (3), their battery (1), whether they see
+the HVT (1), whether they are on the path (1). All standard MANET position
+reporting.
+
+### Edge features (2)
+Link capacity `C_ij` and the ray's clearance margin. **This is the only input the
+GNN has and DeepSets does not** — it is precisely the rung RQ2 tests.
+
+### How many neighbours — all of them, softly gated
+`N−1 ≤ 7`. The graph is **fully connected in the tensor**, with influence scaled
+by `E_ij = sigmoid((C_ij − 5.0)·γ)`. A neighbour behind a tower gets weight ≈0 and
+its message is suppressed.
+
+Not top-K, not a hard link-quality cutoff: a hard cutoff creates a gradient cliff
+when a neighbour flickers across the threshold, and changes tensor shape per
+timestep, which wrecks batching. Soft weights give the same effect with a smooth
+gradient and a fixed shape.
+
+### Terrain — clearance margins first, raster only if needed
+Nothing above tells the drone a tower is *in the way* before a link degrades, so
+it can react but never anticipate.
+
+**Clearance margins (already listed) are the cheap half.** Signed metres by which
+a ray clears the roofline — negative is blocked, positive is clear with margin.
+Free from the slab-intersection code, and smooth where a boolean is a cliff.
+
+**Local height raster is the optional half.** 24×24 cells at 20 m (a 480 m box),
+into a 2–3 layer CNN → 64-dim embedding. Two things make this work:
+
+- **Encode height relative to own altitude**, clipped: a cell reading `+100`
+  means "something 100 m above me — I cannot see through it". This makes the
+  representation **altitude-invariant**, which is a strong inductive bias and
+  should help cross-city transfer by preventing the network from memorising
+  Frankfurt's absolute heights.
+- **Precompute one global grid** (1500 m / 20 m = 75×75) offline in
+  `prep_osm.py`; at runtime each drone's patch is a batched **crop/gather**. No
+  per-drone rasterization, no shapely, stays on GPU.
+
+**Build order: margins first, raster only if the policy is visibly blind.** This
+defers real work and yields a free ablation — *does spatial awareness of buildings
+help, or do local sightline measurements suffice?*
+
+### Critic — centralized, training-only
+Sees global state: all drone states, HVT position and velocity, the full link
+matrix. Two consequences:
+
+- It **does not need to be size-agnostic**. Zero-shot transfer to `N ∈ {3,8}` runs
+  the actor alone; the critic is discarded at evaluation. A plain MLP over
+  concatenated global state is fine.
+- Keep the critic **identical across all three architecture conditions**. If only
+  the actor varies, RQ2 isolates the actor. If both vary, it is confounded.
+
+---
+
 ## Model architectures
 
 > ⚠️ **Provisional — the specific layer choice is still open.** The *rules* below
@@ -239,11 +317,33 @@ all, which would rig the transfer comparison toward the GNN.
 4. **Sanity floor:** any architecture must beat a random policy and at least
    match the B0 scripted heuristic. Failing that is a bug, not a finding.
 
-### Depth follows graph diameter
-`N ≤ 8` on a near-complete capacity-weighted graph ⇒ diameter 1–2. Message-passing
-layers beyond the diameter propagate nothing new. **2 layers, ~128 hidden** is the
-justified default — "two layers because the diameter is two" is a far better
-methodology sentence than "we tried 2, 4 and 8."
+### Depth follows graph diameter — and "layer" means two different things
+Do not confuse these:
+
+- **Message-passing layers** = how far information travels across the graph. One
+  layer reaches direct neighbours; two reaches neighbours-of-neighbours. Nothing
+  to do with capacity.
+- **MLP hidden layers** = ordinary network depth, inside each message-passing
+  layer and in the heads. This is where capacity lives.
+
+The graph is softly fully connected at `N ≤ 8`, so its diameter is **1**: after
+one message-passing layer every drone has already heard every other. A second
+layer buys two-hop relational structure. A third propagates nothing new and
+causes **over-smoothing**, where all node representations converge — a documented
+GNN failure mode, not a rule of thumb.
+
+So **2 message-passing layers** is the ceiling the graph justifies, while width
+stays normal. A reasonable build:
+
+| Component | Shape | Params |
+|---|---|---|
+| Ego encoder | 21 → 256 → 256 | ~70k |
+| Message function φ (×2 layers) | (256+256+2) → 256 → 256 | ~400k |
+| Policy head | 256 → 256 → 6 | ~67k |
+| **Total actor** | | **~550k** |
+
+Width is a hyperparameter and belongs in the equal-budget search; 256 is the
+starting point, not a finding.
 
 ### Expect a null on the in-distribution rung
 At `N=5` the graph is tiny and GNN ≈ DeepSets is a plausible outcome. The
@@ -293,9 +393,9 @@ aspiration — measure it before building anything on top of the env.
   test for `src/env/occlusion.py` is `src/env/test_occlusion.py`.
 - Naming: `hvt`, `mcv_base`, `tracker`, `relay`, `sinr_db`, `capacity_mbps`,
   `edge_weight`, `ptx_dbm` — keep tactical/telecom terms consistent.
-- 13-dim per-node observation: local kinematics, battery, tracking metrics,
-  ambient noise floor. Keep it **agent-local** — global state belongs to the
-  critic, not the actor.
+- Observations: 21-dim ego, 9-dim per neighbour, 2-dim per edge — full breakdown
+  in the "Observations" section above. Keep the actor **agent-local**; global
+  state belongs to the critic, not the actor.
 
 ## Build / test
 ```bash
