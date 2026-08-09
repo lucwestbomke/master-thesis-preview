@@ -90,13 +90,30 @@ Unbounded Shannon reports throughput no real radio delivers.
 
 ### Multi-hop end-to-end capacity and routing
 ```
-C_e2e = min_i(C_i) / n_hops                    # half-duplex decode-and-forward
+C_e2e = min_i(C_i) / min(n_hops, 3)            # half-duplex with spatial reuse
 ```
-The `/n_hops` divisor is what makes short chains preferable; without it, adding
-relays is free and the policy degenerates into long daisy-chains. Path selection
-maximises `min_i(C_i)/n` via a hop-limited widest-path DP:
+Half-duplex relays on one channel must be scheduled, but hops far enough apart
+transmit concurrently, so a linear chain saturates near **1/3** of single-link
+capacity rather than degrading as `1/n` (Li et al., MobiCom 2001; cf. Gupta &
+Kumar 1999).
+
+> A `/n_hops` divisor **plus** full concurrent interference double-counts: `/n`
+> is the pure-TDMA schedule, in which only one hop is active and there is no
+> intra-chain interference to charge. The two cannot both be true. `min(n, 3)`
+> is the form consistent with the interference model in `channel.py`.
+
+Short chains are still preferred — that pressure now comes from physics rather
+than an arbitrary factor: every extra hop is another concurrent transmitter
+raising everyone's noise floor, and must itself clear the SINR bar.
+
+`reuse_limit` is a **parameter, not a constant** (`=max_hops` recovers strict
+TDMA, `=1` removes the penalty). Report the headline result under at least two
+duplexing settings — it converts a soft modelling assumption into a robustness
+check.
+
+Path selection maximises `min_i(C_i)/min(n,3)` via a hop-limited widest-path DP:
 ```
-W[h][j] = max_i min( W[h-1][i], C[i][j] )      # answer: max_h W[h][dst]/h
+W[h][j] = max_i min( W[h-1][i], C[i][j] )      # answer: max_h W[h][dst]/min(h,3)
 ```
 Sources are all drones currently holding a valid HVT observation; if none, mission
 capacity is 0. Fully batched, exact, no per-env Python loop.
@@ -106,6 +123,33 @@ capacity is 0. Fully batched, exact, no per-env Python loop.
 SINR per hop**. At the originally-specified 20 MHz a single hop needed only
 −7.2 dB, which a swarm satisfies by accident and which makes the jammer
 decorative.
+
+### Operating area and Ptx ceiling — must be co-designed
+**The relay chain has to be geometrically necessary.** If one drone can observe
+the HVT and still reach the MCV across the whole map, there is no multi-hop
+problem and no thesis. Ptx and map size therefore cannot be chosen independently.
+
+Run [`scripts/link_budget_check.py`](scripts/link_budget_check.py) before
+committing to either; `tests/test_scenario_sizing.py` pins the resulting table.
+Current verdicts (fc 3.5 GHz, B 10 MHz, 3-hop, 5 Mbps):
+
+| Map | Ptx 10 | Ptx 20 | Ptx 30 | Ptx 40 |
+|---|---|---|---|---|
+| 300 m | infeasible | **trivial** | **trivial** | **trivial** |
+| 600 m | infeasible | contested | **trivial** | **trivial** |
+| 1200 m | infeasible | infeasible | contested | **trivial** |
+| 2000 m | infeasible | infeasible | contested | **trivial** |
+
+> ⚠️ **40 dBm is unusable at any simulable scale** — a *blocked* A2A link at
+> 10 W still carries 15 Mbps over 2.8 km and 5 Mbps over 6.3 km. The viable band
+> is roughly **600 m @ 20 dBm** or **1200–2000 m @ 30 dBm**.
+
+**Consequence for RQ1:** the telecom *energy* term cannot be made large by
+raising Ptx — range grows with power far faster than the mission area can absorb.
+RQ1's claim is therefore about **interference management and throughput**, not
+about saving watts on the radio. Energy stays in the reward and stays equalised
+across conditions, but it is the constraint, not the claim. Flight energy (>90 %
+of the budget) still drives the tracker/relay rotation story in RQ3.
 
 ### Energy
 ```
@@ -118,10 +162,12 @@ is cheapest, which is false for rotary-wing UAVs — and RQ1 is an energy claim,
 it cannot rest on a model that rewards hovering when reality does not. `κ‖a‖²` is
 an explicit **control-effort heuristic**, not physics; present it as such.
 
-**`Ptx ∈ [0, 40] dBm.`** At the old 30 dBm ceiling the telecom term was ~1.6 % of
-power draw — unmeasurable against seed variance, i.e. RQ1 was unanswerable by
-construction. 40 dBm (10 W) is realistic for a tactical MANET radio and puts the
-term at ~14–17 %.
+**`Ptx` ceiling is set by the operating area, not by what makes the energy term
+look good** — see "Operating area and Ptx ceiling" above. A 40 dBm ceiling was
+briefly specified to enlarge the telecom energy share; it makes the mission
+trivially satisfiable by a single drone at every simulable map size and must not
+be reintroduced. Include `P_circuit` (always-on radio front end, ~2–5 W) so the
+radio *subsystem* — not just the PA — is what appears in the energy accounting.
 
 ### Graph, reward, termination
 - GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):

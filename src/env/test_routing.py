@@ -64,6 +64,34 @@ def test_extra_hops_must_earn_their_place():
     assert best_relay_capacity(cap, src, 3, max_hops=3).item() == pytest.approx(12.0, abs=1e-4)
 
 
+def test_spatial_reuse_caps_the_divisor_at_three():
+    """A 4-hop chain pays the same penalty as a 3-hop one.
+
+    Non-adjacent hops transmit concurrently, so a linear chain saturates near
+    1/3 of single-link capacity rather than degrading as 1/n. Pressure toward
+    short chains then comes from interference and per-hop SINR, not from an
+    arbitrary divisor.
+    """
+    cap = _chain({(0, 1): 30.0, (1, 2): 30.0, (2, 3): 30.0, (3, 4): 30.0}, m=5)
+    src = torch.tensor([[True, False, False, False, False]])
+    got = best_relay_capacity(cap, src, dst_index=4, max_hops=4)
+    assert got.item() == pytest.approx(10.0, abs=1e-4)  # 30 / min(4, 3)
+
+
+def test_strict_tdma_recovers_the_per_hop_divisor():
+    cap = _chain({(0, 1): 30.0, (1, 2): 30.0, (2, 3): 30.0, (3, 4): 30.0}, m=5)
+    src = torch.tensor([[True, False, False, False, False]])
+    got = best_relay_capacity(cap, src, 4, max_hops=4, reuse_limit=4)
+    assert got.item() == pytest.approx(7.5, abs=1e-4)  # 30 / 4
+
+
+def test_reuse_limit_one_disables_the_halfduplex_penalty():
+    cap = _chain({(0, 1): 30.0, (1, 2): 30.0})
+    src = torch.tensor([[True, False, False]])
+    got = best_relay_capacity(cap, src, 2, max_hops=2, reuse_limit=1)
+    assert got.item() == pytest.approx(30.0, abs=1e-4)
+
+
 def test_no_observer_means_no_mission_capacity():
     # Perfect radio links, but nobody is looking at the HVT -> nothing to relay.
     cap = _chain({(0, 1): 100.0, (1, 2): 100.0, (0, 2): 100.0})
