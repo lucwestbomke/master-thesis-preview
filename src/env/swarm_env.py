@@ -47,7 +47,22 @@ EDGE_DIM = 2
 ACTION_DIM = 3  # dv_x, dv_y, dv_z
 PTX_FIXED_DBM = 30.0
 CAPACITY_THRESHOLD_MBPS = 5.0
-MAX_JAM_STEPS = 5  # consecutive steps link may be down before termination
+
+# Mission failure is a PER-STEP condition, never a terminal event. Terminating
+# on link loss breaks the task two ways: the policy learns to never acquire the
+# HVT so it can never fail, and a random initial policy dies within a handful of
+# steps and therefore never experiences the tracking phase at all. Episodes run
+# to EPISODE_STEPS or until a battery dies -- battery death is physical and
+# cannot be gamed, since hovering at the MCV burns power too.
+EPISODE_STEPS = 900
+DT_SECONDS = 0.4
+
+# Drones launch parked on the MCV; the chain forms during transit. The HVT is
+# CUED with error, not searched for blind -- blind search over 1500 m^2 is an
+# exploration problem that would swamp the learning signal. Acquisition
+# difficulty arises anyway: transit takes ~100 s and the HVT covers up to a km.
+CUE_SIGMA_M = 150.0
+CUE_REFRESH_S = 10.0
 
 
 class SwarmRelayEnv(ParallelEnv):
@@ -70,11 +85,11 @@ class SwarmRelayEnv(ParallelEnv):
         self._positions: torch.Tensor | None = None  # (num_drones, 3)
         self._velocities: torch.Tensor | None = None  # (num_drones, 3)
         self._battery: torch.Tensor | None = None  # (num_drones,)
-        self._ptx_dbm: torch.Tensor | None = None  # (num_drones,)
         self._hvt_position: torch.Tensor | None = None  # (3,)
         self._hvt_route: torch.Tensor | None = None  # (T, 3) waypoints
+        self._hvt_cue: torch.Tensor | None = None  # (3,) noisy, refreshed
+        self._acquired: bool = False  # has the swarm seen the HVT directly yet
         self._step_count = 0
-        self._link_down_streak = 0
 
         self.agents = []
 
@@ -102,11 +117,15 @@ class SwarmRelayEnv(ParallelEnv):
     def reset(self, seed=None, options=None):
         self.agents = self.possible_agents[:]
         self._step_count = 0
-        self._link_down_streak = 0
 
         # TODO: sample a random start/end pair on self.city_data road graph,
         # build self._hvt_route (randomized per episode, not fixed)
-        # TODO: initialize drone positions/velocities/battery=1.0/ptx_dbm
+        # TODO: place all drones ON the MCV (they launch from it), velocities
+        # zero, battery 1.0. The chain forms during transit -- that is part of
+        # the mission, not a preamble to it.
+        # TODO: initialize the cue: HVT true position + N(0, CUE_SIGMA_M),
+        # refreshed every CUE_REFRESH_S until the swarm acquires the HVT
+        # directly. NOT a blind search -- see AGENTS.md "Episode structure".
 
         observations = {a: self._build_observation(i) for i, a in enumerate(self.agents)}
         infos = {a: {} for a in self.agents}
@@ -137,16 +156,23 @@ class SwarmRelayEnv(ParallelEnv):
         #    (used by the model, not the env — env just exposes capacities)
         # 9. Reward: tracking quality + capacity term - energy penalty
         #    - lambda * Var(battery across agents)
-        # 10. Termination: link down > MAX_JAM_STEPS consecutive, or any
-        #     battery == 0
+        #    - IDLE PENALTY per step with no HVT observation. Without it,
+        #    loitering is free and "never acquire, never fail" is optimal.
+        # 10. Termination: battery == 0 ONLY. Mission failure is a per-step
+        #     condition recorded in `infos`, never terminal -- see the
+        #     EPISODE_STEPS comment above for why. Truncate at EPISODE_STEPS.
 
         observations = {a: self._build_observation(i) for i, a in enumerate(self.agents)}
         rewards = {a: 0.0 for a in self.agents}  # TODO
-        terminations = {a: False for a in self.agents}  # TODO
-        truncations = {a: False for a in self.agents}
+        terminations = {a: False for a in self.agents}  # TODO: battery death only
+        self._step_count += 1
+        truncated = self._step_count >= EPISODE_STEPS
+        truncations = {a: truncated for a in self.agents}
+        # TODO: report per-step mission status here (observed / link_alive /
+        # e2e capacity). "Fraction of steps mission-capable" is the primary
+        # metric, and it cannot be gamed by refusing to start.
         infos = {a: {} for a in self.agents}
 
-        self._step_count += 1
         return observations, rewards, terminations, truncations, infos
 
     def _build_observation(self, agent_idx: int) -> np.ndarray:

@@ -192,18 +192,61 @@ such.
 completeness — including `P_circuit`, the always-on radio front end at ~2–5 W —
 but flight energy is what the policy actually controls.
 
-### Graph, reward, termination
+### Graph and reward
 - GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):
   `E_ij = sigmoid((C_ij − 5.0) · gamma)`
-- Reward: tracking quality + capacity − energy − `λ·Var(B_1..B_N)`. The variance
+- Reward: tracking quality + capacity − energy − `λ·Var(B_1..B_N)`
+  **− idle penalty per step with no HVT observation** (see below). The variance
   term forces role **rotation** rather than a fixed division of labour. Watch for
   its degenerate optimum (all drones hover ⇒ variance 0) — the tracking and
   capacity terms must dominate.
-- Termination: `C_e2e ≥ 5.0 Mbps` false for >5 consecutive steps, **or** any drone
-  hits `B_t == 0`.
 - Jammer is mounted on the HVT and moves with it.
 - HVT route: randomized valid path over the real OSM road graph, resampled per
-  episode. Fixed routes only for early debugging.
+  episode. Speed ~10 m/s. Fixed routes only for early debugging.
+
+### Episode structure — launch, cue, termination
+
+**Launch.** Drones start parked on the MCV and fly out to deploy. The relay chain
+forms during transit; this is a phase of the mission, not a preamble to it. It
+also creates the energy tension — flying out costs battery, so the swarm cannot
+send everyone everywhere.
+
+**Cue.** The HVT's position is *cued* with error, not known and not searched for
+blind. `σ ≈ 150 m`, refreshed every ~10 s until the swarm acquires it directly —
+justified as an intermittent external ISR source. The 150 m is set against the
+sensor envelope: from the cued point the target is within along-street detection
+range with high probability, so acquisition is likely rather than lucky.
+
+> **Do not make this a blind search.** Exploration is RL's weakest point; a sparse
+> "found it" reward over 1500 m² would dominate the learning signal and swamp
+> everything the thesis is actually about. Acquisition difficulty arises for free
+> anyway: transit takes ~100 s and the HVT covers up to a kilometre in that time,
+> so the cue is stale on arrival.
+
+Curriculum axis, free of charge: `σ` 0 → 50 → 150 m, refresh continuous → 10 s
+→ 30 s.
+
+**Termination — mission failure must NOT terminate the episode.** Two independent
+failure modes if it does:
+
+1. *Termination hacking.* If the link requirement starts only at acquisition, the
+   optimal policy is to never acquire, never fail, and loiter.
+2. *An undesigned curriculum.* Under the old rule (`C_e2e < 5 Mbps` for >5
+   consecutive steps), a random initial policy dies around step 6 and the agent
+   only ever experiences the first six steps. It cannot learn to track because it
+   never reaches the tracking phase.
+
+So:
+- **Fixed-length episodes** (truncation), ~600–1200 steps at `dt = 0.25–0.5 s`.
+- **Battery exhaustion still terminates** — physical, and unhackable, since
+  hovering at the MCV burns power too.
+- **Mission failure is a per-step condition**, feeding reward and metrics. The
+  chain may drop and re-form, which is what real missions do.
+- **Per-step idle penalty** whenever the HVT is unobserved, so loitering accrues
+  unbounded negative reward and "never acquire" is strictly worse than trying.
+
+Primary metric becomes **fraction of steps mission-capable** rather than survival
+time — richer signal, and it cannot be gamed by refusing to start.
 
 ---
 
@@ -287,9 +330,8 @@ matrix. Two consequences:
 
 ## Model architectures
 
-> ⚠️ **Provisional — the specific layer choice is still open.** The *rules* below
-> are settled and protect the comparison's validity; the layer shortlist is a
-> starting point to be revisited before Block G.
+> Layer choice is now settled (custom MPNN — see below). Widths and depths remain
+> hyperparameters for the equal-budget search, not findings.
 
 ### The ladder isolates one factor per rung
 | | Neighbours read as | Permutation-invariant | Size-agnostic | Uses link quality |
@@ -305,10 +347,38 @@ flat MLP conflates the two and is the weaker experiment.
 The MLP needs **max-N padding plus masking** or it cannot be evaluated off-N at
 all, which would rig the transfer comparison toward the GNN.
 
+### Layer choice — the edge features are the whole point
+RQ2's GNN rung exists **only** to test whether link quality should modulate who a
+drone listens to. If the layer cannot ingest edge features, the GNN rung silently
+becomes the DeepSets rung and RQ2 measures nothing.
+
+| PyG layer | Edge features | Verdict |
+|---|---|---|
+| `SAGEConv` (GraphSAGE) | **none** | ☠️ **Never use here.** Collapses GNN into DeepSets. This is the default people reach for. |
+| `GCNConv` | scalar weight, degree-normalised | Poor fit — the normalisation assumes a different graph structure |
+| `GATv2Conv` | ✓ via `edge_dim` — enters the attention weights | Good fit |
+| `NNConv` | ✓ — edge features generate the message weight matrix | Expressive but the hypernetwork emits 256×256 values. Expensive. |
+| `GINEConv` | ✓ additive only (`x_j + e_ij`) | Cheap, blunt |
+| `TransformerConv` | ✓ | Heavier than this graph needs |
+
+**Decision: a custom layer on PyG's `MessagePassing` base**, with
+`message(x_i, x_j, e_ij) = MLP([x_i, x_j, e_ij])`.
+
+This is *not* inventing an architecture — it is the standard MPNN formulation of
+Gilmer et al. (2017), ~20 lines on top of PyG, and fully citable. It is preferred
+here because **it makes the ablation exact**: the DeepSets rung is the identical
+layer with `e_ij` zeroed. Same code path, same parameter count, same optimiser,
+one input masked. No confound is possible. Two differently-named layers would
+always invite "maybe GATv2 is just a better layer."
+
+Fallback if an off-the-shelf named layer is preferred: **`GATv2Conv` with
+`edge_dim=2`**. Attention fits conceptually — "how much should I listen to this
+neighbour" is exactly what link capacity says — and GATv2 (Brody et al., 2022)
+fixed the static-attention flaw in the original GAT, so it is the right citation.
+
 ### Rules that keep the comparison honest
-1. **Do not invent an architecture.** Use a citable PyG layer — GraphSAGE,
-   GATv2, or `NNConv`/`GINEConv` if edge features go into the message. Designing
-   a novel GNN is a different thesis.
+1. **Do not invent an architecture.** Either the MPNN formulation above or a
+   citable PyG layer. Designing a novel GNN is a different thesis.
 2. **Equal hyperparameter budget** across all three, and say so in the
    methodology. Tuning the GNN harder than the baselines is the single most
    likely way this result gets dismissed.
