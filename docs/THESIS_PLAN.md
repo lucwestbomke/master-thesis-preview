@@ -25,8 +25,12 @@ A swarm of `N` quadrotors must, continuously and simultaneously:
 3. **Survive** — finite batteries, and a jammer riding on the HVT that degrades
    links near it.
 
-Episode fails if the mission link drops below 5 Mbps for >5 consecutive steps,
-or any drone's battery reaches zero.
+The HVT starts 300–500 m from the MCV and drives away, so the chain requirement
+escalates 1 → 2 → 3 hops during the episode. Episodes run a fixed 600 steps
+(240 s) or until a battery dies. Mission failure is a **per-step condition**, not
+a terminal event — terminating on it lets the policy learn never to acquire the
+target, and stops a random initial policy from ever reaching the tracking phase.
+See `AGENTS.md` → Episode structure.
 
 ### The observation envelope — an angle constraint, not a distance one
 
@@ -70,17 +74,25 @@ All drones run the same policy (homogeneous, CTDE). Nothing assigns roles.
 > that abstraction produce policies that fail under a physically realistic
 > channel, and which specific physics is responsible?
 
-Train one policy per **fidelity level**, evaluate **all of them under F3**:
+Train one policy per **fidelity level**, evaluate **all of them under the full
+model**. Each rung adds exactly one physical effect, so the gaps attribute the
+answer rather than merely demonstrating one:
 
-| Level | Channel model | Isolates |
+| Level | Link capacity is… | Rung isolates |
 |---|---|---|
-| **F0** | Connectivity radius, `R` calibrated to the median link range observed under F3 | the standard abstraction |
-| **F1** | F0 + geometric occlusion from real footprints | cost of ignoring buildings |
-| **F2** | F1 + jammer | cost of ignoring the threat |
-| **F3** | Full SINR, Shannon rate with modulation cap, multi-hop rate division | reference model |
+| **F0** | `C_max` if `distance < R` else 0 — `R` calibrated to F4's median link range | the standard abstraction |
+| **F1** | + requires an unoccluded ray | cost of ignoring **buildings** |
+| **F2** | continuous: path loss → SINR → Shannon with modulation cap | cost of **binary** connectivity |
+| **F3** | + jammer in the SINR denominator | cost of ignoring the **threat** |
+| **F4** | + multi-hop rate division `min(Cᵢ)/min(n,3)` | cost of ignoring **relay cost** |
 
-The gaps decompose the answer: F0→F1 is the price of ignoring occlusion, F1→F2
-of ignoring the jammer, F2→F3 of ignoring rate and multi-hop division.
+Five rungs rather than four costs ~5 extra runs (~$25) and buys separable
+attribution; bundling two effects into one rung makes them unrecoverable
+afterwards.
+
+**Curriculum is orthogonal to this.** Fidelity is fixed at env construction and
+never changes within a run; the curriculum varies within every run and uses an
+identical schedule across all conditions. See `AGENTS.md` → Curriculum.
 
 **Hypothesis:** the gap is dominated by **occlusion**. A radius model lets the
 policy believe it is connected straight through a building, so it learns
@@ -89,7 +101,7 @@ penalty, and rate division mainly shifts preferred chain length rather than
 breaking the policy.
 
 **Fairness requirement:** `R` in F0 must be *calibrated*, not guessed — set it to
-the median link range measured under F3 in the same city. An arbitrary `R` makes
+the median link range measured under F4 in the same city. An arbitrary `R` makes
 the comparison meaningless, and it is the first thing an examiner will probe.
 
 **Why this question:** it is falsifiable either way, it reuses every line of the
@@ -138,10 +150,10 @@ short.**
 | # | Condition | Purpose |
 |---|---|---|
 | B0 | **Scripted geometric heuristic** — relays placed on the MCV→HVT geodesic, one observer, fixed Ptx | Non-learned control. Answers "is MARL earning its keep?" Cheap, disproportionately valuable. |
-| E1 | Learned policy trained at each of F0–F3, all evaluated under F3 | RQ1 |
-| E2 | F3-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
-| E3 | F3-trained with `λ = 0` vs `λ = λ*` | RQ3 — see below |
-| E4 | F3-trained with a 4-dim action (motion **+** transmit power) | RQ-power null, see below |
+| E1 | Learned policy trained at each of F0–F4, all evaluated under F4 | RQ1 |
+| E2 | F4-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
+| E3 | F4-trained with `λ = 0` vs `λ = λ*` | RQ3 — see below |
+| E4 | F4-trained with a 4-dim action (motion **+** transmit power) | RQ-power null, see below |
 
 **E3, the `λ=0` ablation.** `λ` weights the battery-variance term `−λ·Var(B)`. If
 one drone does all the observing it drains while the others idle, battery levels
@@ -164,11 +176,11 @@ you actually try it?"* Cuttable under time pressure, but cheap insurance.
 
 | Reported (final) runs | Count |
 |---|---|
-| F0, F1, F2 trained, 5 seeds each | 15 |
-| F3 × {MLP, DeepSets, GNN}, 5 seeds each (the GNN run doubles as RQ1's F3 arm) | 15 |
+| F0–F3 trained, 5 seeds each (F4 arm comes from the RQ2 GNN run) | 20 |
+| F4 × {MLP, DeepSets, GNN}, 5 seeds each (the GNN run doubles as RQ1's F4 arm) | 15 |
 | E3 `λ=0` ablation | 5 |
 | E4 motion+power null check | 5 |
-| **Total reported** | **40** |
+| **Total reported** | **45** |
 
 At 10 M steps and the ≥1000 env-steps/s gate that is ~3 h per run, so **~120
 GPU-hours** for everything that appears in the thesis. RQ2's transfer evaluation
@@ -195,7 +207,7 @@ window is for.
 
 ## 4. Metrics — pre-registered before any results are seen
 
-**Primary (RQ1):** mission success rate under F3 — fraction of episodes
+**Primary (RQ1):** mission success rate under F4 — fraction of episodes
 completed without link or battery failure.
 
 **Mission outcome:** episode length; link-alive fraction; tracking coverage
@@ -302,7 +314,7 @@ official five months are experiments and writing only.
 | C | Occlusion (batched torch slab method) | Matches a slow shapely reference on random geometry |
 | D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s on GPU** |
 | E | Renderer + B0 scripted heuristic | Video of the heuristic completing an episode |
-| F | Fidelity levels F0–F3 as config flags | All four run; `R` calibration measured under F3 |
+| F | Fidelity levels F0–F4 as config flags | All five run; `R` calibration measured under F4 |
 | G | MAPPO integration + curriculum | One toy run learns above random |
 | H | Sionna offline validation of the closed-form channel | Agreement plot for the methodology chapter |
 

@@ -168,8 +168,12 @@ class SwarmRelayEnv(ParallelEnv):
         #    slot — it carries the MAC assumption -> channel.capacity_mbps
         # 6. Mission link: routing.best_relay_capacity over the drones that
         #    currently hold a valid HVT observation -> min_i(C_i)/min(n,3)
-        #    NOTE: the channel fidelity level (F0 radius / F1 +occlusion /
-        #    F2 +jammer / F3 full) is a config flag gating steps 4-6. RQ1.
+        #    NOTE: the channel fidelity level gates steps 4-6 and is RQ1's
+        #    independent variable. F0 radius / F1 +occlusion / F2 +SINR&rate /
+        #    F3 +jammer / F4 +multi-hop division. It is a CONSTRUCTION-TIME
+        #    config flag and must never change within a run -- unlike the
+        #    curriculum, which varies within every run on an identical
+        #    schedule across all conditions. See AGENTS.md "Curriculum".
         # 7. is_link_alive = routing.link_alive(C_e2e, CAPACITY_THRESHOLD_MBPS)
         # 8. Continuous GNN edge weights: sigmoid((capacity - 5.0) * gamma)
         #    (used by the model, not the env — env just exposes capacities)

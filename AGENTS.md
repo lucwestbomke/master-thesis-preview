@@ -299,13 +299,32 @@ time — richer signal, and it cannot be gamed by refusing to start.
 
 ### Curriculum
 
+**Curriculum varies *within* one training run. Fidelity varies *between* runs.**
+They are orthogonal and must not be confused:
+
+| | Curriculum | Fidelity (RQ1) |
+|---|---|---|
+| Set when | changes during training, via callback | fixed at env construction |
+| Changes within a run | **yes** | **never** |
+| Differs between runs | no — identical schedule everywhere | **yes, that is the point** |
+| Purpose | make learning possible | the variable being measured |
+
+Every run uses one fidelity level from first step to last, and every run walks
+the same curriculum stages. Four students, four different textbooks, each taught
+easy chapters first — then all four sit the same exam.
+
+> ⛔ **Never use channel fidelity as a curriculum axis.** It is RQ1's independent
+> variable; training up through fidelity levels would confound the primary result
+> beyond repair. Same reasoning forbids ramping building density.
+
+> ⚠️ **The jammer appears in both, and that is fine — but only if the schedule is
+> identical everywhere.** Run the same jammer ramp in every condition and let the
+> fidelity level decide whether it does anything. In an F0/F1/F2 run the ramp
+> still executes and simply has no effect, because there is no SINR to degrade.
+> Same parameters, same step counts, nothing to confound.
+
 Budget real time for this. It is where projects of this shape stall, and the cue
 is only one axis of four.
-
-> ⛔ **Never use channel fidelity (F0–F3) as a curriculum axis.** It is the
-> independent variable of RQ1. Training through fidelity levels would confound
-> the primary result beyond repair. Same reasoning forbids ramping building
-> density.
 
 | Stage | HVT speed | Jammer | Battery | Episode length | Cue | What it teaches |
 |---|---|---|---|---|---|---|
