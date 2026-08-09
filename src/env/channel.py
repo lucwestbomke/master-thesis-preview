@@ -161,17 +161,28 @@ def sinr_db(
     -------
     (B, M, M) SINR in dB for each candidate link i -> j.
 
-    Interference model
-    ------------------
-    All active transmitters share one band (full spatial reuse, worst case). For
-    a link i -> j, every other active transmitter k contributes interference at
-    j. Node j's own transmission is excluded via the zeroed diagonal: a
-    half-duplex node does not self-interfere in its own receive slot. The
-    half-duplex cost is instead charged once, end-to-end, as the `/ n_hops`
-    divisor in routing.py.
+    Interference model -- `tx_mask` carries the MAC assumption
+    ---------------------------------------------------------
+    Every node flagged in `tx_mask` interferes with every link it is not the
+    transmitter of. Node j's own emission is excluded via the zeroed diagonal:
+    a half-duplex node does not self-interfere in its own receive slot.
 
-    This is a deliberately conservative assumption -- a real tactical MANET MAC
-    would schedule to avoid some of this. State it as such in the methodology.
+    Which nodes belong in `tx_mask` is a medium-access decision, and the caller
+    must make it deliberately -- getting it wrong silently changes the physics:
+
+    - **Scheduled MAC (default for this project).** routing.py divides
+      end-to-end rate by `min(n_hops, reuse_limit)`, which presumes a
+      spatial-reuse TDMA schedule. Under a reuse-3 schedule a chain of <=3 hops
+      never has two hops active at once, so when evaluating a link the mask
+      should contain *only the transmitters active in that slot*. For short
+      chains that is one node, and SINR reduces to signal over jammer-plus-noise.
+    - **Uncoordinated access.** All active nodes concurrent, for worst-case
+      analysis. Then the routing divisor must not also be applied, or the
+      half-duplex cost is charged twice.
+
+    Passing every node while also dividing by `min(n, 3)` double-counts. That
+    combination made a feasible 3-hop chain look infeasible during scenario
+    design; see docs/NEGATIVE_RESULTS.md.
     """
     m = prx_dbm.shape[1]
     eye = torch.eye(m, device=prx_dbm.device, dtype=prx_dbm.dtype)

@@ -186,6 +186,43 @@ def test_regression_original_spec_sinr_formula_was_broken():
     assert broken - correct > 90.0
 
 
+def test_tx_mask_carries_the_mac_assumption():
+    """The scheduled and uncoordinated MACs must give different answers.
+
+    Under the spatial-reuse TDMA schedule routing.py assumes, a chain of <=3
+    hops never has two hops active at once, so only the slot's transmitter
+    belongs in the mask and SINR reduces to signal over jammer-plus-noise.
+    Passing every node instead -- while still dividing end-to-end rate by
+    min(n, 3) -- double-counts the half-duplex cost. That combination made a
+    feasible 3-hop chain look infeasible during scenario design, so pin it.
+    """
+    # Chain 0 -> 1 -> 2 -> 3. Node 2's emission also lands on node 1, so it
+    # competes with hop 0->1 whenever the two are scheduled together.
+    prx = torch.full((1, 4, 4), -300.0)
+    prx[0, 0, 1] = prx[0, 1, 2] = prx[0, 2, 3] = -70.0
+    prx[0, 2, 1] = -70.0
+    jam = torch.full((1, 4), -300.0)
+
+    scheduled = sinr_db(prx, jam, -97.0, torch.tensor([[True, False, False, False]]))
+    uncoordinated = sinr_db(prx, jam, -97.0, torch.tensor([[True, False, True, False]]))
+
+    assert scheduled[0, 0, 1].item() == pytest.approx(27.0, abs=1e-2)  # noise only
+    assert uncoordinated[0, 0, 1].item() == pytest.approx(0.0, abs=1e-2)  # equal interferer
+    assert (scheduled[0, 0, 1] - uncoordinated[0, 0, 1]).item() > 25.0
+
+
+def test_scheduled_mac_reduces_to_jammer_plus_noise():
+    """With one transmitter in the mask, SINR is signal over (jammer + noise)."""
+    prx = torch.full((1, 3, 3), -300.0)
+    prx[0, 0, 1] = -70.0
+    jam = torch.full((1, 3), -300.0)
+    jam[0, 1] = -100.0  # jammer equal to the noise floor at the receiver
+
+    s = sinr_db(prx, jam, -100.0, torch.tensor([[True, False, False]]))
+    # denominator doubles -> exactly 3 dB below the noise-only case
+    assert s[0, 0, 1].item() == pytest.approx(30.0 - 3.0103, abs=1e-3)
+
+
 # --------------------------------------------------------------------------- #
 # Rate
 # --------------------------------------------------------------------------- #

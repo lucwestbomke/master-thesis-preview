@@ -1,7 +1,7 @@
 # Thesis Plan
 
-**Working title:** Interference-Aware Joint Motion and Transmit-Power Control for
-Multi-Hop UAV Relay Swarms in Contested Urban Environments
+**Working title:** How Much Channel Realism Does a Learned UAV Relay Swarm Need?
+Multi-Agent Reinforcement Learning for Urban Relay Chains under Jamming
 
 **Degree:** MSc Artificial Intelligence
 **Official window:** March 2027 – August 2027 (~5 months)
@@ -9,306 +9,284 @@ Multi-Hop UAV Relay Swarms in Contested Urban Environments
 
 ---
 
-## 1. The mission — what the swarm is actually for
+## 1. The mission — what the swarm is for
 
-A ground **High-Value Target (HVT)** vehicle drives through a dense city along the
-real road network. A **Mobile Command Vehicle (MCV)** sits at a fixed position
-somewhere else in the city. Buildings block line-of-sight between them, so the MCV
-cannot see or hear the HVT directly.
+A ground **High-Value Target (HVT)** drives through Frankfurt along the real road
+network. A **Mobile Command Vehicle (MCV)** is parked elsewhere in the city.
+Buildings block line of sight between them.
 
 A swarm of `N` quadrotors must, continuously and simultaneously:
 
-1. **Observe** — at least one drone must hold the HVT inside its sensor envelope:
-   within range `D_max`, inside a downward Field-of-View cone `θ_max`, and with an
-   unoccluded ray (no building between drone and vehicle).
-2. **Relay** — the resulting sensor feed (an EO/IR video stream) must reach the MCV
-   at **≥ 5 Mbps end-to-end**. No single drone can usually see both the HVT and the
-   MCV, so this requires a **multi-hop chain**: observer → relay → relay → MCV.
-3. **Survive** — each drone has a finite battery. The HVT carries a roof-mounted
-   jammer that travels with it, raising the noise floor for any drone near it.
+1. **Observe** — at least one drone must hold the HVT in an unoccluded ray,
+   within sensor range.
+2. **Relay** — the resulting video feed must reach the MCV at **≥5 Mbps
+   end-to-end**, which needs a multi-hop chain because no single drone can
+   usually manage both jobs at once.
+3. **Survive** — finite batteries, and a jammer riding on the HVT that degrades
+   links near it.
 
-The episode ends in failure if the mission link drops below 5 Mbps for more than 5
-consecutive steps, or if any drone's battery reaches zero.
+Episode fails if the mission link drops below 5 Mbps for >5 consecutive steps,
+or any drone's battery reaches zero.
 
-### Why this is genuinely hard
+### The observation envelope — an angle constraint, not a distance one
 
-Three tensions make it a real coordination problem rather than a formation-flying
-exercise:
+To see a vehicle in a street canyon the ray must clear the roofline. That fixes
+an *elevation angle* (~66° for Frankfurt's 20 m streets and 22 m fabric), not a
+range. Consequences:
 
-**Tension 1 — observe vs. survive.** To observe the HVT you must be close to it.
-Close to the HVT is exactly where the jammer is loudest. The best observation
-position is the worst communication position.
+- **Across the street**, the drone must stay within `(W/2)·h/H_b` horizontally —
+  36 m at 80 m altitude, 91 m at 200 m. Flying higher buys lateral freedom.
+- **Along the street**, the roofline never blocks; the limit is the sensor.
+  ~830 m to recognise a vehicle type, ~2.8 km merely to detect one.
 
-**Tension 2 — reach vs. relay quality.** The observer is deep in an urban canyon,
-far from the MCV. Its data must be carried by others. Adding hops extends reach but
-costs throughput: a half-duplex chain of `n` hops delivers at most
-`min_i(C_i) / n`. So the swarm must find the *shortest chain that still clears the
-buildings* — a geometric problem defined by the actual OSM footprints.
+So the real envelope is a long wedge down the street plus an overhead cone, and
+real OSM footprints make it richer — intersections open it in four directions,
+squares open it entirely. This is why occlusion must be computed from actual
+geometry rather than a radius.
 
-**Tension 3 — loud vs. quiet (the core of RQ1).** Each drone chooses its own
-transmit power. Transmitting louder improves *your* link but raises the interference
-floor for *every other hop in the chain*. Power is therefore not a private energy
-dial — it is a shared resource that must be allocated spatially across the swarm.
-This is what makes joint power control a multi-agent problem and not a per-agent
-optimization.
+### Why it is hard
 
-### The behaviour we expect to emerge
+- **Observing fights relaying.** The observer is pinned near the HVT, deep in
+  the street network and in the jammer's line of sight. Its data must be carried
+  by others.
+- **Occlusion is the binding constraint.** Frankfurt's tower cluster blocks
+  air-to-air links; the low-rise fabric does not. Where a relay can usefully sit
+  is decided by building geometry, not by range.
+- **The target moves.** The chain must reconfigure continuously as the HVT turns
+  through the street network and sightlines open and close.
+- **Batteries deplete.** The observer role is the expensive one — it chases, and
+  it sits in the jammer's face. A fixed division of labour is unsustainable.
 
-All drones run the **same** policy (homogeneous, CTDE). Nothing in the architecture
-assigns roles. But the task rewards differentiation: one drone burning energy chasing
-the HVT, others holding cheap station-keeping positions at street intersections where
-they have LoS to both neighbours. The battery-variance penalty `-λ·Var(B)` then makes
-a *fixed* division of labour unsustainable — the tracker drains faster, variance
-grows, and the swarm is pushed to **rotate roles**, handing tracking duty to a fresher
-drone. Demonstrating that this rotation emerges from a homogeneous policy, and that it
-is caused by the variance penalty, is RQ3.
+All drones run the same policy (homogeneous, CTDE). Nothing assigns roles.
 
 ---
 
 ## 2. Research questions
 
-### RQ1 (primary) — Does joint motion + power control beat motion-only control?
+### RQ1 (primary) — Which physical effects must a channel model include for learned policies to transfer?
 
-> Under an equal total energy budget, does a policy that jointly controls kinematics
-> and transmit power outperform a motion-only policy with fixed transmit power, in a
-> multi-hop relay task with intra-swarm interference?
+> Most MARL work on UAV swarm communication abstracts the channel to a
+> connectivity radius — two agents are "connected" if they are within *R*. Does
+> that abstraction produce policies that fail under a physically realistic
+> channel, and which specific physics is responsible?
 
-**Hypothesis:** Yes — and the mechanism is **interference management**, not energy
-saving. The joint policy will learn to attenuate transmitters whose signal reaches
-receivers they are not serving, raising end-to-end capacity at equal energy cost.
+Train one policy per **fidelity level**, evaluate **all of them under F3**:
 
-This mechanistic claim is what elevates the thesis above a benchmark table. It is
-falsifiable and separately measurable (see §4, mechanism metrics). Note the
-consequence: **if the joint policy wins but shows no interference-reduction
-signature, the hypothesis is wrong even though the headline number is favourable.**
-Report that honestly if it happens.
+| Level | Channel model | Isolates |
+|---|---|---|
+| **F0** | Connectivity radius, `R` calibrated to the median link range observed under F3 | the standard abstraction |
+| **F1** | F0 + geometric occlusion from real footprints | cost of ignoring buildings |
+| **F2** | F1 + jammer | cost of ignoring the threat |
+| **F3** | Full SINR, Shannon rate with modulation cap, multi-hop rate division | reference model |
 
-**Why the framing changed.** The original plan framed transmit power purely as an
-energy term. At a 30 dBm ceiling that term is ~1.6 % of the power budget (hover
-dominates by ~60×) — too small to resolve against seed variance.
+The gaps decompose the answer: F0→F1 is the price of ignoring occlusion, F1→F2
+of ignoring the jammer, F2→F3 of ignoring rate and multi-hop division.
 
-Raising the ceiling does not fix this, and briefly specifying 40 dBm was a mistake:
-link range grows with transmit power far faster than a simulable urban operating
-area can absorb. At 10 W a *blocked* drone-to-drone link still carries 15 Mbps over
-2.8 km, so a single drone spans any map up to 2 km and the relay chain — the entire
-premise — becomes unnecessary. The trade-off is structural, not a tuning problem:
+**Hypothesis:** the gap is dominated by **occlusion**. A radius model lets the
+policy believe it is connected straight through a building, so it learns
+geometry that cannot work. The jammer contributes a smaller, spatially localised
+penalty, and rate division mainly shifts preferred chain length rather than
+breaking the policy.
 
-| Map | Ptx 10 dBm | 20 dBm | 30 dBm | 40 dBm |
-|---|---|---|---|---|
-| 300 m | infeasible | **trivial** | **trivial** | **trivial** |
-| 600 m | infeasible | contested | **trivial** | **trivial** |
-| 1200 m | infeasible | infeasible | contested | **trivial** |
-| 2000 m | infeasible | infeasible | contested | **trivial** |
+**Fairness requirement:** `R` in F0 must be *calibrated*, not guessed — set it to
+the median link range measured under F3 in the same city. An arbitrary `R` makes
+the comparison meaningless, and it is the first thing an examiner will probe.
 
-Generated by [`scripts/link_budget_check.py`](../scripts/link_budget_check.py) and
-pinned by `tests/test_scenario_sizing.py`. Viable design points are ~600 m at
-20 dBm or ~1200–2000 m at 30 dBm.
+**Why this question:** it is falsifiable either way, it reuses every line of the
+channel work, and its answer is directly useful — it tells the field which
+physics a swarm-communication simulator may safely omit.
 
-**So RQ1's mechanism is interference, and only interference.** The telecom energy
-share cannot be made large without destroying the mission, so the claim is about
-spatial power allocation raising end-to-end throughput — not about saving watts on
-the radio. Energy remains in the reward and remains equalised across conditions;
-it is the *constraint*, not the *claim*. Flight energy (>90 % of the budget) still
-carries the tracker/relay rotation story in RQ3.
+### RQ2 (secondary) — Does relational structure help, and does it transfer?
 
-This is a stronger thesis than the energy-accounting version: it is a genuine
-multi-agent coordination result rather than a power-budget arithmetic result.
-
-### RQ2 (secondary) — Does relational structure help, and does it transfer across swarm size?
-
-> Does a GNN actor/critic outperform permutation-invariant but non-relational
-> architectures, and does it enable zero-shot transfer to unseen swarm sizes?
-
-Three architectures form a ladder that isolates **one factor at a time**:
+Architecture ladder, isolating one factor per rung:
 
 | Architecture | Permutation-invariant | Size-agnostic | Uses link structure |
 |---|---|---|---|
-| Flat MLP (max-N padded + masked) | ✗ | ✗ (padding only) | ✗ |
+| Flat MLP (max-N padded + masked) | ✗ | ✗ | ✗ |
 | DeepSets (mean-pool over neighbours) | ✓ | ✓ | ✗ |
 | **GNN (capacity-weighted edges)** | ✓ | ✓ | ✓ |
 
-MLP → DeepSets isolates permutation invariance. DeepSets → GNN isolates *who can
-talk to whom* — the actual research claim. Comparing a GNN only against a flat MLP
-conflates the two and is the weaker experiment.
+Trained at `N=5`, evaluated zero-shot at `N ∈ {3,5,8}` **and on a second city**
+with different morphology. Transfer across urban form is a stronger
+generalisation claim than transfer across swarm size alone, and costs one extra
+OSM extract.
 
-Trained at `N=5`, evaluated zero-shot at `N ∈ {3, 5, 8}`. The MLP requires max-N
-padding and masking to be evaluable at all off-N; without this the comparison is
-rigged in the GNN's favour and an examiner will say so.
+The MLP needs max-N padding and masking to be evaluable off-N at all; without it
+the comparison is rigged toward the GNN.
 
-**Honest expectation:** at N=5 the *in-distribution* gap between DeepSets and GNN may
-be within seed noise. That is fine — the interesting result lives in the off-N
-transfer column, and a null in-distribution result reported cleanly is still a
-contribution.
+### RQ3 (tertiary) — Does role rotation emerge, and what causes it?
 
-### RQ3 (tertiary) — Does role specialization and rotation emerge, and what causes it?
-
-> Does a homogeneous policy spontaneously differentiate into tracker/relay roles, and
-> is the battery-variance penalty necessary for role *rotation*?
-
-Ablation over `λ ∈ {0, λ*}`. Measured by role-switch frequency, terminal battery
-variance, and episode length. This is the qualitative/behavioural chapter and the
-source of the best figures. **First thing to cut if time runs short.**
+Does a homogeneous policy differentiate into observer / relay / resting roles,
+and rotate them? Two candidate drivers, ablated separately so they do not
+confound: the battery-variance penalty `-λ·Var(B)`, and the fact that the
+observer role is also the jammer-exposed one. **First thing to cut if time runs
+short.**
 
 ---
 
 ## 3. Conditions and baselines
 
-RQ1 stands or falls on baseline fairness. The most common way this kind of result
-gets destroyed in a defence is "you compared against a straw man."
-
 | # | Condition | Purpose |
 |---|---|---|
-| B0 | **Scripted geometric heuristic** — relays evenly spaced on the MCV→HVT geodesic, one tracker, fixed Ptx | Non-learned control. Answers "is MARL earning its keep at all?" Cheap to build, disproportionately valuable. |
-| B1 | **Motion-only MARL, fixed Ptx**, swept over `{20, 25, 30, 35, 40}` dBm | The RQ1 baseline. **Report the best-performing fixed value**, not an arbitrary one. |
-| E1 | **Joint motion + power MARL** | RQ1 treatment. |
-| E2 | E1 × {MLP, DeepSets, GNN} × N ∈ {3,5,8} | RQ2. |
-| E3 | E1 with `λ = 0` | RQ3 ablation. |
+| B0 | **Scripted geometric heuristic** — relays placed on the MCV→HVT geodesic, one observer, fixed Ptx | Non-learned control. Answers "is MARL earning its keep?" Cheap, disproportionately valuable. |
+| E1 | Learned policy trained at each of F0–F3, all evaluated under F3 | RQ1 |
+| E2 | F3-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
+| E3 | F3-trained with `λ = 0` vs `λ = λ*`; jammer on/off | RQ3 |
+| E4 | F3-trained with a 4-dim action (motion **+** transmit power) | Documents the power-control null result empirically (see §6) |
 
-**Equal energy budget** is enforced by giving every condition the same initial battery
-and the same energy model — conditions differ only in what the policy may control.
-
-**Compute estimate:** B1 needs 5 Ptx values × 3 seeds = 15 short runs (sweep, not full
-length). E1/E2/E3 need 5 seeds each. Total ≈ 45–60 runs. At ~10 M steps and a target
-of ≥1000 env-steps/s batched, that is roughly 150–250 GPU-hours — comfortably within a
-few hundred dollars of RunPod. **The throughput target is the gate; measure it early.**
+≥5 seeds per condition. Median and IQR, never mean ± std.
 
 ---
 
 ## 4. Metrics — pre-registered before any results are seen
 
-Fixing these now protects against unconsciously selecting the metric that flatters the
-outcome.
+**Primary (RQ1):** mission success rate under F3 — fraction of episodes
+completed without link or battery failure.
 
-**Primary (RQ1 headline):**
-- **Energy per successful tracking-second** — joules consumed per second during which
-  the HVT is observed *and* the mission link is ≥ 5 Mbps. Lower is better. This single
-  number captures the whole trade-off.
+**Mission outcome:** episode length; link-alive fraction; tracking coverage
+fraction; mean and 5th-percentile end-to-end capacity.
 
-**Mission outcome:**
-- Episode length / survival rate
-- Link-alive fraction (share of steps with end-to-end ≥ 5 Mbps)
-- Tracking coverage fraction (share of steps with a valid HVT observation)
-- Mean and 5th-percentile end-to-end capacity
+**Failure attribution (this is what makes RQ1 explanatory rather than a table):**
+- fraction of steps where the policy's intended chain passes through an occluded
+  link — the direct signature of a radius-trained policy
+- mean chain hop count and mean hop distance
+- fraction of failures caused by observation loss vs link loss vs battery
 
-**Mechanism (these test RQ1's *causal* claim, not just its outcome):**
-- Total intra-swarm interference power received across the chain
-- Correlation between a drone's chosen Ptx and its distance to the nearest
-  non-served neighbour — the signature of learned spatial power allocation
-- Mean chain hop count and mean per-hop margin above threshold
-
-**Behavioural (RQ3):**
-- Role-switch count per episode (role = argmax observation quality)
-- Terminal battery variance across the swarm
-
-**Reporting:** ≥5 seeds per condition; report median and interquartile range, not
-mean ± std (RL returns are not normally distributed). Show per-seed learning curves
-in the appendix, never just the aggregate.
+**Behavioural (RQ3):** role-switch count per episode; terminal battery variance;
+time each drone spends in the jammer's line of sight.
 
 ---
 
-## 5. Model specification — what changed and why
+## 5. Scenario parameters — derived, not chosen
 
-Full formal spec lives in [`AGENTS.md`](../AGENTS.md). Summary of corrections made
-against the original plan:
+Fixed from sources outside this project, then the operating area solved for.
 
-| Item | Was | Now | Why |
+| Parameter | Value | Basis |
+|---|---|---|
+| City | **Frankfurt**, ~1500 m box over Bankenviertel + surrounding fabric | see below |
+| Ptx | 30 dBm (1 W), fixed | UAV tactical MANET radios (Silvus SC4200, Doodle Labs Helix, TrellisWare TW-950) are 0.5–2 W |
+| Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter, tens of watts over several hundred MHz |
+| Carrier / bandwidth | 3.5 GHz / 10 MHz | S/C-band tactical allocation |
+| Flight altitude | 80 m nominal | above the fabric, below the towers; inside TR 36.777's 22.5–300 m band |
+| Rate target | 5 Mbps end-to-end | compressed HD EO/IR feed |
+| Operating area | **1500 m** | single drone manages only ~1.7 Mbps at that range (fails); the swarm reaches ~24 Mbps (feasible) |
+
+**Why Frankfurt.** The canyon ratio `H_b/W` decides everything:
+
+| Morphology | H_b/W | Across-street LoS @80 m | Verdict |
 |---|---|---|---|
-| SINR | `P_sig − (P_jam + N0)` in dB | Linear-domain sum of interference + noise, then convert | Adding dBm values is a product, not a sum. Original produced ~+100 dB SINR — physically impossible, and it silently deletes the jammer from the experiment. |
-| Path loss | 3GPP TR 38.901 UMi for everything | TR 36.777 UMi-AV for air-to-ground; FSPL + blockage for air-to-air | 38.901 UMi is specified for UE heights 1.5–22.5 m. It is not valid for aerial nodes, and it is doubly invalid for drone-to-drone links above rooftop. |
-| Interference | Jammer only | Jammer + all concurrent friendly transmitters | Five drones at up to 10 W on a shared band interfere with each other far more than the jammer does. Without this, RQ1 has no mechanism. |
-| Multi-hop capacity | Undefined | `min_i(C_i) / min(n_hops, 3)`, path chosen by hop-limited widest-path DP | The entire premise is a relay chain; it was never specified how the path is chosen or how end-to-end rate is computed. `/n` plus concurrent interference double-counts — `/n` *is* the pure-TDMA schedule, which has no intra-chain interference. `min(n,3)` is the standard linear-chain result and the one consistent with the interference model. |
-| Duplexing | Implicit | Explicit `reuse_limit` parameter, justified | Single radio cannot tx/rx in-band (~100 dB self-interference); orthogonal channels assume spectrum abundance the scenario denies; multiple radios are ruled out by SWaP. Reporting under two settings makes it a robustness check. |
-| Ptx range | 0–30 dBm | Set by operating area — 20 dBm @ 600 m or 30 dBm @ 1.2–2 km | Ptx and map size cannot be chosen independently. 40 dBm was briefly specified and is unusable: it makes a single drone sufficient at every simulable scale. |
-| Noise floor | Hardcoded −100 dBm | `−174 + 10log10(B) + NF` | Must track bandwidth. At B=10 MHz, NF=7 dB → −97 dBm. |
-| Capacity | Unbounded Shannon | `min(0.75·log2(1+SINR), 7.4)` b/s/Hz | Shannon is an upper bound; real NR caps at 256QAM. Unbounded Shannon reports fantasy throughput at high SINR. |
-| Bandwidth | 20 MHz | 10 MHz | At 20 MHz, 5 Mbps needs only −7.2 dB SINR — the constraint never binds and the jammer becomes decorative. At 10 MHz over a 3-hop chain it needs ≈ +4.8 dB per hop. Properly contested. |
-| Energy | `P_hover + α‖v‖² + β‖a‖²` | Rotary-wing model (Zeng et al. 2019) + explicit control-effort term | Quadratic-in-speed says hovering is cheapest. Real rotary-wing power is U-shaped with a minimum near 10–15 m/s. RQ1 is an energy claim; it cannot rest on an energy model that rewards hovering when reality doesn't. |
+| Manhattan Midtown | 8.3 | 4.8 m | Observation nearly degenerate off-axis |
+| Chicago Loop | 5.5 | 7.3 m | Same |
+| **Frankfurt fabric** | **1.1** | **36 m** | **Workable** |
+| Frankfurt Bankenviertel | 9.0 | 4.4 m | Towers block A2A — the useful part |
+| Paris Haussmann | 0.8 | 50 m | Above every roof, no A2A blocking → 2-hop chains |
+| Barcelona Eixample | 1.1 | 36 m | Same, and no towers |
 
-> ⚠️ **Verify before citing.** The TR 36.777 UMi-AV coefficients in
-> [`src/env/channel.py`](../src/env/channel.py) were written from memory and are
-> marked `TODO(verify)`. Pull the actual 3GPP document and check them against
-> Table B-2 before any of this reaches the methodology chapter. Same for the
-> Zeng et al. rotary-wing constants. Do not cite numbers an AI gave you.
+Frankfurt wins because it is **heterogeneous**: low-rise fabric gives a workable
+observation envelope, while the tower cluster genuinely blocks air-to-air links
+and forces chains to route around it. Uniform-tall cities are uniformly extreme;
+uniform-low cities have no occlusion problem at all. Data quality is also good —
+Hessen publishes open LoD2 3D building models, so heights are exact rather than
+dependent on OSM tag coverage.
 
----
+> **Phase 0 check:** verify LoD2 / OSM `building:levels` coverage for the chosen
+> box before committing. Fall back to a height prior from footprint area and
+> land use if coverage is patchy.
 
-## 6. Architecture decision: batched env from day one
-
-Verified against the installed stack: **skrl's `PettingZooWrapper` round-trips every
-action and observation through NumPy on every step** (`untensorize_space` /
-`tensorize_space`), and exposes `num_envs == 1`. skrl's vectorized paths are Isaac
-Lab-only. So the PettingZoo dict API directly contradicts the project's own
-"everything stays in VRAM" rule and caps throughput at single-env Python speed.
-
-**Decision:** the env core is written as a **batched tensor env with a leading
-`num_envs` dimension**, with:
-- a thin PettingZoo `ParallelEnv` adapter on top, used only for API-compliance tests
-  and single-env visual debugging;
-- a small custom skrl multi-agent wrapper written against the batched core for
-  training, bypassing `PettingZooWrapper` entirely.
-
-Same rule for geometry: `osmnx`/`shapely` are **offline-only**, used in
-`scripts/prep_osm.py` to bake buildings into a tensor of boxes. Runtime occlusion is
-vectorized segment-vs-box intersection (slab method) in pure torch.
+Regenerate the sizing with [`scripts/scenario_design.py`](../scripts/scenario_design.py);
+the trade-off table is pinned by `tests/test_scenario_sizing.py`.
 
 ---
 
-## 7. Timeline
+## 6. Reported negative result: transmit power control
 
-The preparation window is the single biggest advantage available. Goal: **enter March
-2027 with a finished, tested, benchmarked simulator**, so the official five months are
-experiments and writing only.
+Three independent framings for adaptive transmit power were tested numerically
+against fair baselines. All three came out null, for three different structural
+reasons. This is documented in [`NEGATIVE_RESULTS.md`](NEGATIVE_RESULTS.md) and
+reported in the thesis rather than buried — it saves the next person the same
+weeks, and E4 confirms it empirically alongside the analysis.
+
+Summary: at a realistic 30 dBm ceiling the telecom term is ~1.6 % of power draw;
+with a single flow and ordinary routing-aware medium access a ≤3-hop chain never
+runs two transmitters concurrently, so a centralized oracle with full state
+yields **0.0 %** over fixed power; and an emission-detectability cost saturates,
+because the observer is unavoidably exposed while every other drone is already
+below a −100 dBm ESM floor (**0.1–1.1 %**).
+
+Consequence: the action space is **motion only** (3-dim) for the main
+experiments. Transmit power is fixed at 30 dBm.
+
+---
+
+## 7. Architecture decision: batched env from day one
+
+Verified against the installed stack: skrl's `PettingZooWrapper` round-trips
+every action and observation through NumPy on each step, and exposes
+`num_envs == 1`; its vectorized paths are Isaac Lab-only. That contradicts the
+project's own stay-in-VRAM rule and caps throughput at single-env Python speed.
+
+So: the env core is **batched with a leading `num_envs` dimension**; a thin
+PettingZoo adapter sits on top for API-compliance tests and visual debugging
+only; training uses a **custom skrl multi-agent wrapper** against the batched
+core. `osmnx`/`shapely` are offline-only, baking buildings into a tensor of
+boxes; runtime occlusion is vectorized segment-vs-box intersection in pure torch.
+
+---
+
+## 8. Timeline
+
+Goal: enter March 2027 with a finished, tested, benchmarked simulator, so the
+official five months are experiments and writing only.
 
 ### Phase 0 — Preparation (now → Feb 2027, part-time)
 
 | Block | Deliverable | Done when |
 |---|---|---|
-| A | Channel model + routing, unit-tested | Hand-computed link budgets pass as assertions ✅ *(done — see §8)* |
-| B | OSM pipeline (`scripts/prep_osm.py`) | Buildings + road graph cached as tensors for one real city district |
-| C | Occlusion (batched torch slab method) | Matches a slow shapely reference implementation on random geometry |
-| D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s measured on GPU** |
-| E | Renderer + B0 scripted heuristic baseline | Video of the heuristic completing an episode |
-| F | MAPPO integration + curriculum | One toy run learns *something* above random |
-| G | Sionna offline validation of the closed-form channel | Agreement plot for the methodology chapter |
+| A | Channel model + routing, unit-tested | ✅ done — 53 tests, hand-computed |
+| B | OSM/LoD2 pipeline for Frankfurt | Buildings + road graph cached as tensors; height coverage verified |
+| C | Occlusion (batched torch slab method) | Matches a slow shapely reference on random geometry |
+| D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s on GPU** |
+| E | Renderer + B0 scripted heuristic | Video of the heuristic completing an episode |
+| F | Fidelity levels F0–F3 as config flags | All four run; `R` calibration measured under F3 |
+| G | MAPPO integration + curriculum | One toy run learns above random |
+| H | Sionna offline validation of the closed-form channel | Agreement plot for the methodology chapter |
 
-Blocks B/C/E are the ones to hand to an AI agent in small chunks — they are
-well-specified and testable. Blocks A/D/F deserve your own attention.
+Blocks B/C/E are well-specified enough to hand to an agent in chunks. A/D/G
+deserve your own attention.
 
 ### Phase 1 — Official thesis (Mar → Aug 2027)
 
 | Month | Focus |
 |---|---|
-| Mar | Curriculum tuning until E1 trains reliably. Freeze the env — **no model changes after this point.** |
-| Apr | B1 Ptx sweep + E1 at 5 seeds. First RQ1 answer. |
-| May | E2 architecture ladder + N-transfer. Write Methodology chapter (the model is frozen, so this is safe to write now). |
-| Jun | E3 ablation, mechanism analysis, figures. Write Results. |
+| Mar | Curriculum tuning until F3 trains reliably. **Freeze the environment.** |
+| Apr | E1 fidelity ladder at 5 seeds. First RQ1 answer. |
+| May | E2 architecture ladder + transfer. Write Methodology (model is frozen). |
+| Jun | E3, E4, failure attribution, figures. Write Results. |
 | Jul | Discussion, related work, introduction. Buffer for reruns. |
 | Aug | Revisions, defence prep. |
 
-**Hard rule:** freeze the environment at the end of March. Every result before the
-freeze is a pilot; every result after is thesis material. Mixing them is how these
-projects lose a month re-running everything.
+**Hard rule:** freeze the environment end of March 2027. Everything before is a
+pilot; everything after is thesis material.
 
 ---
 
-## 8. Risks and mitigations
+## 9. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **Env throughput too low** — the project's main failure mode | High | Batched design from day one. Benchmark in Block D; if <1000 steps/s, cut N, cut building count, or profile before proceeding. Do not start Phase 1 without hitting this. |
-| **Nothing learns** — sparse reward + harsh termination | High | Curriculum: stationary HVT → slow HVT → jammer off → jammer on → full speed. Budget real time for this; it is the usual place these projects stall. |
-| **RQ1 effect is null** | Medium | Already mitigated (Ptx ceiling + interference). If still null, the mechanism metrics let you write an informative negative result rather than a hole. |
-| **Variance penalty has a degenerate optimum** (all drones hover, variance = 0) | Medium | Verify tracking/capacity terms dominate; consider potential-based shaping so the penalty doesn't distort the optimal policy. |
-| **Reward-weight sweep explodes** (6 free weights) | Medium | Do not sweep 6 weights. Fix α, β, ω, γ, threshold from physical reasoning and document the choice. Sweep λ only. |
-| **Scope creep** | Medium | RQ3 is the designated cut. EW/EMCON detectability is explicitly **out of scope** — noted as future work only. |
+| Env throughput too low | High | Batched design from day one; benchmark in Block D. Do not start Phase 1 without ≥1000 steps/s. |
+| Nothing learns | High | Curriculum: stationary HVT → slow → jammer off → jammer on → full speed. Budget real time; this is where such projects stall. |
+| RQ1 gap is trivially large ("wrong model gives wrong policy") | Medium | Calibrate `R` fairly, and make the *attribution* the contribution — which physics matters, and by how much — not the existence of a gap. |
+| Building height data patchy | Medium | Hessen LoD2 as primary; footprint-area prior as fallback. Check in Block B. |
+| Scope creep | Medium | RQ3 is the designated cut. Multiple concurrent flows and adaptive jammer are future work. |
 
 ---
 
-## 9. Deliberately out of scope
+## 10. Deliberately out of scope
 
-- **EW detectability / EMCON** (probability of adversary geolocation as a function of
-  Ptx). Genuinely interesting and a natural extension, but it widens the mission
-  objective and adds a modelling assumption that needs its own defence. Future work.
-- Adversarial/learning jammer — the jammer is a fixed-policy scripted threat.
-- Rigid-body flight dynamics — kinematic point-mass model with acceleration limits.
+- Adaptive/learning jammer — fixed scripted threat.
+- Multiple concurrent sensor flows — the one untested route to making transmit
+  power matter; noted as future work.
+- Rigid-body flight dynamics — kinematic point-mass with acceleration limits.
 - Sionna in the training loop — offline validation only.
+- Sim-to-real. Stated plainly in limitations.

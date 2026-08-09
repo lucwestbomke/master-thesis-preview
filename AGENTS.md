@@ -12,11 +12,22 @@ The full research design (research questions, hypotheses, baselines, metrics,
 timeline) lives in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md). **Read it before
 making design decisions.** Short version:
 
-- **RQ1 (primary):** does joint control of motion *and* transmit power beat
-  motion-only control with fixed Ptx, at equal energy budget? Hypothesised
-  mechanism: **interference management**, not energy saving.
-- **RQ2:** MLP → DeepSets → GNN ladder, plus zero-shot transfer across `N ∈ {3,5,8}`.
-- **RQ3:** does tracker/relay role rotation emerge, and does `-λ·Var(B)` cause it?
+- **RQ1 (primary):** which physical effects must a channel model include for
+  learned policies to transfer? Train at fidelity **F0** (connectivity radius,
+  `R` calibrated to F3's median link range) → **F1** (+occlusion) → **F2**
+  (+jammer) → **F3** (full SINR/rate/multi-hop division); evaluate *all* under
+  F3. Hypothesis: the gap is dominated by **occlusion**.
+- **RQ2:** MLP → DeepSets → GNN ladder; zero-shot transfer across `N ∈ {3,5,8}`
+  **and** across city morphology.
+- **RQ3:** does observer/relay role rotation emerge? Two drivers ablated
+  separately: `-λ·Var(B)` and jammer exposure.
+
+> **Action space is motion only (3-dim).** Transmit power is fixed at 30 dBm.
+> Three independent justifications for adaptive Ptx — energy, interference,
+> detectability — were each tested numerically against fair baselines and each
+> came out null. Do not reintroduce it as a control dimension without reading
+> [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md); condition E4 keeps it
+> only to reproduce the null empirically.
 
 ## Stack (do not substitute without asking)
 - Python 3.12, PyTorch. Dependency management via **uv** (`uv.lock` is authoritative).
@@ -72,9 +83,18 @@ Interference and noise sum in the **linear** domain. The earlier spec had
 a sum — and returned ~+100 dB for realistic urban links, silently deleting the
 jammer from every experiment. A regression test pins this.
 
-All active drones share one band (full spatial reuse, worst case). Node `j`'s own
-transmission is excluded via a zeroed diagonal — half-duplex, it does not receive
-its own emission.
+Node `j`'s own transmission is excluded via a zeroed diagonal — half-duplex, it
+does not receive its own emission.
+
+**`tx_mask` carries the MAC assumption — set it deliberately.** The routing
+divisor `min(n_hops, 3)` presumes a spatial-reuse TDMA schedule, under which a
+≤3-hop chain never has two hops active at once. So when evaluating a link, the
+mask must contain only the transmitters active *in that slot* — for short chains,
+one node, and SINR reduces to signal over jammer-plus-noise. Passing every node
+while also applying the divisor double-counts the half-duplex cost, and made a
+feasible 3-hop chain look infeasible during scenario design. The
+uncoordinated-access mode (all nodes concurrent, no divisor) stays available for
+worst-case analysis. Pinned by tests.
 
 ### Noise floor — derived, never hardcoded
 ```
@@ -124,50 +144,53 @@ SINR per hop**. At the originally-specified 20 MHz a single hop needed only
 −7.2 dB, which a swarm satisfies by accident and which makes the jammer
 decorative.
 
-### Operating area and Ptx ceiling — must be co-designed
-**The relay chain has to be geometrically necessary.** If one drone can observe
-the HVT and still reach the MCV across the whole map, there is no multi-hop
-problem and no thesis. Ptx and map size therefore cannot be chosen independently.
+### Scenario — derived, not chosen
+Every parameter is fixed from an external source, and the operating area is then
+*solved for* so that a single drone fails while the swarm succeeds. Regenerate
+with [`scripts/scenario_design.py`](scripts/scenario_design.py) and
+[`scripts/link_budget_check.py`](scripts/link_budget_check.py);
+`tests/test_scenario_sizing.py` pins the trade-off table.
 
-Run [`scripts/link_budget_check.py`](scripts/link_budget_check.py) before
-committing to either; `tests/test_scenario_sizing.py` pins the resulting table.
-Current verdicts (fc 3.5 GHz, B 10 MHz, 3-hop, 5 Mbps):
+| Parameter | Value | Basis |
+|---|---|---|
+| City | **Frankfurt**, 1500 m box over Bankenviertel + fabric | heterogeneous: low-rise gives a workable observation envelope, towers block A2A |
+| Operating area | **1500 m** | solo drone manages ~1.7 Mbps (fails); swarm ~24 Mbps (feasible) |
+| Ptx | **30 dBm, fixed** | UAV tactical MANET radios are 0.5–2 W |
+| Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter |
+| Flight altitude | 80 m nominal | above fabric, below towers; inside TR 36.777's 22.5–300 m band |
 
-| Map | Ptx 10 | Ptx 20 | Ptx 30 | Ptx 40 |
-|---|---|---|---|---|
-| 300 m | infeasible | **trivial** | **trivial** | **trivial** |
-| 600 m | infeasible | contested | **trivial** | **trivial** |
-| 1200 m | infeasible | infeasible | contested | **trivial** |
-| 2000 m | infeasible | infeasible | contested | **trivial** |
+> ⚠️ **Never raise Ptx to make the energy term measurable.** At 40 dBm a
+> *blocked* A2A link still carries 15 Mbps over 2.8 km, so one drone spans any
+> simulable map and the relay chain becomes unnecessary. Range grows with power
+> far faster than the mission area can absorb.
 
-> ⚠️ **40 dBm is unusable at any simulable scale** — a *blocked* A2A link at
-> 10 W still carries 15 Mbps over 2.8 km and 5 Mbps over 6.3 km. The viable band
-> is roughly **600 m @ 20 dBm** or **1200–2000 m @ 30 dBm**.
+### Observation envelope — an angle constraint, not a distance one
+The ray must clear the roofline, which fixes an elevation angle (~66° for
+Frankfurt), not a range:
+- **across-street:** within `(W/2)·h/H_b` — 36 m at 80 m altitude, 91 m at 200 m.
+  Flying higher buys lateral freedom.
+- **along-street:** the roofline never blocks; the sensor limits instead
+  (~830 m to recognise a vehicle, ~2.8 km to detect one).
 
-**Consequence for RQ1:** the telecom *energy* term cannot be made large by
-raising Ptx — range grows with power far faster than the mission area can absorb.
-RQ1's claim is therefore about **interference management and throughput**, not
-about saving watts on the radio. Energy stays in the reward and stays equalised
-across conditions, but it is the constraint, not the claim. Flight energy (>90 %
-of the budget) still drives the tracker/relay rotation story in RQ3.
+So the envelope is a wedge down the street plus an overhead cone — **not a
+36 m disc**. Compute it from real footprints, never from a radius.
 
 ### Energy
 ```
 P_total = P_flight(‖v‖) + κ·‖a‖² + P_tx_DC
 P_tx_DC = 10^(Ptx_dBm/10)/1000 / η_PA + P_circuit          # η_PA ≈ 0.25
 ```
-`P_flight` is the **rotary-wing model of Zeng, Xu & Zhang (2019)**, which is
-U-shaped with a minimum near 10–15 m/s. The earlier `α‖v‖²` form claimed hovering
-is cheapest, which is false for rotary-wing UAVs — and RQ1 is an energy claim, so
-it cannot rest on a model that rewards hovering when reality does not. `κ‖a‖²` is
-an explicit **control-effort heuristic**, not physics; present it as such.
+`P_flight` is the **rotary-wing model of Zeng, Xu & Zhang (2019)**, U-shaped with
+a minimum near 10–15 m/s. The earlier `α‖v‖²` form claimed hovering is cheapest,
+which is false for rotary-wing UAVs — and energy drives the role-rotation result
+in RQ3, so it cannot rest on a model that rewards hovering when reality does not.
+`κ‖a‖²` is an explicit **control-effort heuristic**, not physics; present it as
+such.
 
-**`Ptx` ceiling is set by the operating area, not by what makes the energy term
-look good** — see "Operating area and Ptx ceiling" above. A 40 dBm ceiling was
-briefly specified to enlarge the telecom energy share; it makes the mission
-trivially satisfiable by a single drone at every simulable map size and must not
-be reintroduced. Include `P_circuit` (always-on radio front end, ~2–5 W) so the
-radio *subsystem* — not just the PA — is what appears in the energy accounting.
+`P_tx_DC` is a **constant** (Ptx is fixed at 30 dBm), so it shifts the budget by
+~1.6 % and does not vary with the action. Keep it in the accounting for
+completeness — including `P_circuit`, the always-on radio front end at ~2–5 W —
+but flight energy is what the policy actually controls.
 
 ### Graph, reward, termination
 - GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):

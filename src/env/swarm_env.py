@@ -26,7 +26,12 @@ from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
 OBS_DIM = 13  # kinematics, battery, tracking metrics, ambient noise floor
-ACTION_DIM = 4  # dv_x, dv_y, dv_z, delta_ptx
+# Motion only. Transmit power is fixed at 30 dBm -- adaptive Ptx was tested
+# against fair baselines under three separate justifications (energy,
+# interference, detectability) and came out null each time. See
+# docs/NEGATIVE_RESULTS.md before adding a 4th dimension back.
+ACTION_DIM = 3  # dv_x, dv_y, dv_z
+PTX_FIXED_DBM = 30.0
 CAPACITY_THRESHOLD_MBPS = 5.0
 MAX_JAM_STEPS = 5  # consecutive steps link may be down before termination
 
@@ -68,10 +73,7 @@ class SwarmRelayEnv(ParallelEnv):
             a: spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
             for a in self.possible_agents
         }
-        # dv_x, dv_y, dv_z unconstrained-ish; delta_ptx clamped downstream to
-        # keep resulting Ptx within [0, 40] dBm (see AGENTS.md — the 30 dBm
-        # ceiling made the telecom energy term ~1.6% of draw, i.e. RQ1 was
-        # unanswerable by construction).
+        # dv_x, dv_y, dv_z, scaled to acceleration limits downstream.
         self.action_spaces = {
             a: spaces.Box(low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32)
             for a in self.possible_agents
@@ -97,21 +99,25 @@ class SwarmRelayEnv(ParallelEnv):
         return observations, infos
 
     def step(self, actions: dict[str, np.ndarray]):
-        # 1. Apply actions -> update velocity/position (kinematics) and
-        #    ptx_dbm (clamped [0, 40] dBm) per agent
+        # 1. Apply actions -> update velocity/position (kinematics). Ptx is
+        #    constant at PTX_FIXED_DBM; it is not an action.
         # 2. Advance HVT along its route by one step
         # 3. Update battery: P_total = P_flight(||v||) + kappa*||a||^2
         #    + P_tx_DC, where P_flight is the rotary-wing model (Zeng et al.
-        #    2019, U-shaped in speed) and P_tx_DC = 10^(ptx/10)/1000/eta_PA
-        #    + P_circuit. battery -= P_total * dt
+        #    2019, U-shaped in speed) and P_tx_DC is constant. battery -= P*dt
         # 4. Occlusion: batched torch segment-vs-box (slab method) against the
         #    pre-baked building tensor. NOT shapely — that is offline-only,
-        #    see scripts/prep_osm.py
+        #    see scripts/prep_osm.py. Also gates the sensor: observation needs
+        #    an unoccluded ray, which is an ANGLE constraint (clear the
+        #    roofline), not a radius — see AGENTS.md.
         # 5. Per-link path loss by class (A2A: FSPL + blockage; A2G: TR 36.777
-        #    UMi-AV) -> channel.received_power_dbm -> channel.sinr_db, which
-        #    includes intra-swarm interference -> channel.capacity_mbps
+        #    UMi-AV) -> channel.received_power_dbm -> channel.sinr_db. Pass a
+        #    tx_mask holding only the transmitters active in the evaluated
+        #    slot — it carries the MAC assumption -> channel.capacity_mbps
         # 6. Mission link: routing.best_relay_capacity over the drones that
-        #    currently hold a valid HVT observation -> min_i(C_i)/n_hops
+        #    currently hold a valid HVT observation -> min_i(C_i)/min(n,3)
+        #    NOTE: the channel fidelity level (F0 radius / F1 +occlusion /
+        #    F2 +jammer / F3 full) is a config flag gating steps 4-6. RQ1.
         # 7. is_link_alive = routing.link_alive(C_e2e, CAPACITY_THRESHOLD_MBPS)
         # 8. Continuous GNN edge weights: sigmoid((capacity - 5.0) * gamma)
         #    (used by the model, not the env — env just exposes capacities)
