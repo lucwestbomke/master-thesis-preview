@@ -204,27 +204,76 @@ but flight energy is what the policy actually controls.
 - HVT route: randomized valid path over the real OSM road graph, resampled per
   episode. Speed ~10 m/s. Fixed routes only for early debugging.
 
-### Episode structure — launch, cue, termination
+### Episode structure — launch, cue, route
 
-**Launch.** Drones start parked on the MCV and fly out to deploy. The relay chain
-forms during transit; this is a phase of the mission, not a preamble to it. It
-also creates the energy tension — flying out costs battery, so the swarm cannot
-send everyone everywhere.
+**Launch.** Drones start parked on the MCV and fly out. The chain forms during
+transit; that is a phase of the mission, not a preamble. It also creates the
+energy tension — flying out costs battery, so the swarm cannot send everyone
+everywhere.
 
-**Cue.** The HVT's position is *cued* with error, not known and not searched for
-blind. `σ ≈ 150 m`, refreshed every ~10 s until the swarm acquires it directly —
-justified as an intermittent external ISR source. The 150 m is set against the
-sensor envelope: from the cued point the target is within along-street detection
-range with high probability, so acquisition is likely rather than lucky.
+**Start close, drive away.** The HVT starts **300–500 m** from the MCV and drives
+outward. This resolves a conflict that otherwise has no solution: the MCV must be
+*far* for a relay chain to be necessary (a single drone covers everything inside
+~1000 m), but *near* for the cue to still be useful on arrival. Starting close and
+opening the range gives both, and the chain requirement escalates on its own:
 
-> **Do not make this a blind search.** Exploration is RL's weakest point; a sparse
-> "found it" reward over 1500 m² would dominate the learning signal and swamp
-> everything the thesis is actually about. Acquisition difficulty arises for free
-> anyway: transit takes ~100 s and the HVT covers up to a kilometre in that time,
-> so the cue is stale on arrival.
+| Time | Range | Solo drone | Chain |
+|---|---|---|---|
+| t=0 | 400 m | 18.5 Mbps | 1 hop |
+| t=60 s | 700 m | 9.5 Mbps | 1 hop |
+| t=120 s | 1000 m | 4.7 Mbps | **2 hops** |
+| t=240 s | 1400 m | 2.1 Mbps | **3 hops** |
 
-Curriculum axis, free of charge: `σ` 0 → 50 → 150 m, refresh continuous → 10 s
-→ 30 s.
+The episode is therefore its own curriculum — easy at the start, hard at the end —
+so early training gets dense reward from the opening instead of hitting a wall.
+
+**Cue — its job is to break directional symmetry, not to solve acquisition.**
+One-shot at launch, `σ ≈ 150 m`, **never refreshed**.
+
+> An earlier draft refreshed the cue every 10 s from an "external ISR asset."
+> That is incoherent: a sensor that can persistently track the HVT through a city
+> makes the swarm redundant. The refresh was a mechanism invented to fix cue
+> staleness, with a justification bolted on afterwards. The correct fix was to
+> shorten transit by starting close.
+
+Precision barely matters — drift during transit swamps `σ` anyway. Without *any*
+cue the target sits in a 300–500 m annulus in any direction; five drones would
+find it, but a random initial policy never would, so early training gets no
+gradient. The cue supplies a vector to fly along from step one. That is all it is
+for.
+
+Acquisition difficulty is then set by **street topology, not by a parameter**.
+The 830 m recognition range holds only down a clear straight street; Frankfurt's
+streets bend, so 100–400 m is more typical. How often long sightlines actually
+occur is an empirical question — **measure it in Block B**, do not assume it.
+
+**Route — pre-sampled, not random-at-junctions.** At reset, sample the full route
+as a path on the road graph *restricted to the map box*. Random turning behaves
+badly: it doubles back, stalls in cul-de-sacs, oscillates around one block, and
+leaves the map. Preventing all that amounts to writing a route sampler by
+accident. Pre-sampling gives, by construction: the target never leaves the box
+(no separate border logic needed), a known episode duration, reproducibility from
+a seed, and a route that can be *required* to move away from the MCV. It costs
+nothing in difficulty — the drones cannot see the future route either way.
+
+**Speeds — from the OSM road class, not a constant.**
+
+| Road class | Limit | m/s |
+|---|---|---|
+| residential | 30 km/h | 8.3 |
+| secondary | 50 km/h | 13.9 |
+| primary | 60 km/h | 16.7 |
+
+> **Exclude primary/trunk from route sampling.** The drone must be meaningfully
+> faster than the target or tracking is impossible, and at 20 m/s cruise the
+> margin over a 60 km/h target is only 1.2× — not enough to recover after a turn.
+> Restricting to residential/secondary gives 1.4–1.8×. Defensible anyway: a
+> target moving covertly through a city uses ordinary streets.
+
+Drone: **20 m/s cruise, 25 m/s dash.**
+
+**Randomise per episode:** MCV position in the map, HVT start on a road 300–500 m
+from it, and the route. The policy must not be able to memorise one layout.
 
 **Termination — mission failure must NOT terminate the episode.** Two independent
 failure modes if it does:
@@ -247,6 +296,51 @@ So:
 
 Primary metric becomes **fraction of steps mission-capable** rather than survival
 time — richer signal, and it cannot be gamed by refusing to start.
+
+### Curriculum
+
+Budget real time for this. It is where projects of this shape stall, and the cue
+is only one axis of four.
+
+> ⛔ **Never use channel fidelity (F0–F3) as a curriculum axis.** It is the
+> independent variable of RQ1. Training through fidelity levels would confound
+> the primary result beyond repair. Same reasoning forbids ramping building
+> density.
+
+| Stage | HVT speed | Jammer | Battery | Episode length | Cue | What it teaches |
+|---|---|---|---|---|---|---|
+| 1 | **stationary** | off | 3× | 150 steps | exact | fly out, form a chain, hold station |
+| 2 | residential (8 m/s) | off | 2× | 300 steps | exact | follow a moving target, keep the chain |
+| 3 | full road speed | **on** | 1.5× | 450 steps | σ=150 m | degraded links near the target |
+| 4 | full | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, role rotation |
+
+Reasoning per axis:
+
+- **HVT speed first, and it matters most.** A stationary target decouples "learn
+  to relay" from "learn to chase". Those are two hard problems; learning them
+  simultaneously from scratch is the likeliest failure mode.
+- **Episode length** is nearly free here, because difficulty is *monotone in
+  time* — a short episode is literally the easy 1-hop opening. Extending it is a
+  curriculum with no extra machinery.
+- **Battery** must start generous. An early policy flies inefficiently and would
+  drain and die before learning anything. But it must *bind* at stage 4, or RQ3
+  has no mechanism to study.
+- **Jammer off first**, since it degrades exactly the first hop, which is the
+  hardest link to close.
+
+Two rules that protect the results:
+
+1. **Fixed schedule by step count in the reported runs**, not adaptive
+   advancement. Adaptive advancement would let the easier fidelity levels
+   progress faster and hand them more experience at the final stage, confounding
+   RQ1. Use adaptive advancement during development to *find* the schedule, then
+   freeze it and use the same one everywhere.
+2. **Mix in earlier stages** (~20 % of episodes) rather than hard-switching, or
+   the policy forgets the opening phase it still has to execute every episode.
+
+Optional stretch, only once tracking already works: **stage 5 with no cue at
+all** — genuine search. Legitimate as an endpoint; fatal as a starting point,
+because that is where it eats the learning signal.
 
 ---
 

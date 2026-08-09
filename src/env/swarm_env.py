@@ -54,15 +54,29 @@ CAPACITY_THRESHOLD_MBPS = 5.0
 # steps and therefore never experiences the tracking phase at all. Episodes run
 # to EPISODE_STEPS or until a battery dies -- battery death is physical and
 # cannot be gamed, since hovering at the MCV burns power too.
-EPISODE_STEPS = 900
+EPISODE_STEPS = 600  # 240 s at DT_SECONDS
 DT_SECONDS = 0.4
 
-# Drones launch parked on the MCV; the chain forms during transit. The HVT is
-# CUED with error, not searched for blind -- blind search over 1500 m^2 is an
-# exploration problem that would swamp the learning signal. Acquisition
-# difficulty arises anyway: transit takes ~100 s and the HVT covers up to a km.
+# Drones launch parked on the MCV. The HVT starts CLOSE (300-500 m) and drives
+# away, so the chain requirement escalates 1 -> 2 -> 3 hops during the episode.
+# This resolves an otherwise unsolvable conflict: the MCV must be far for a
+# relay to be necessary at all (one drone covers everything inside ~1000 m) but
+# near for the cue to survive transit.
+HVT_START_RANGE_M = (300.0, 500.0)
+
+# One-shot cue at launch, NEVER refreshed. Its job is to break directional
+# symmetry and give early training a gradient -- not to solve acquisition.
+# Precision barely matters; drift during transit swamps sigma. A refreshed cue
+# would imply a persistent external tracker, which makes the swarm redundant.
 CUE_SIGMA_M = 150.0
-CUE_REFRESH_S = 10.0
+
+# Route is PRE-SAMPLED on the in-box road graph at reset, not chosen randomly at
+# junctions -- that doubles back, stalls in cul-de-sacs and leaves the map.
+# Pre-sampling gives the map border for free. Speeds come from OSM road class;
+# primary/trunk are excluded so the drone keeps a 1.4-1.8x speed margin.
+HVT_SPEED_BY_CLASS_MS = {"residential": 8.3, "secondary": 13.9}
+DRONE_CRUISE_MS = 20.0
+DRONE_DASH_MS = 25.0
 
 
 class SwarmRelayEnv(ParallelEnv):
@@ -87,7 +101,7 @@ class SwarmRelayEnv(ParallelEnv):
         self._battery: torch.Tensor | None = None  # (num_drones,)
         self._hvt_position: torch.Tensor | None = None  # (3,)
         self._hvt_route: torch.Tensor | None = None  # (T, 3) waypoints
-        self._hvt_cue: torch.Tensor | None = None  # (3,) noisy, refreshed
+        self._hvt_cue: torch.Tensor | None = None  # (3,) one-shot, never refreshed
         self._acquired: bool = False  # has the swarm seen the HVT directly yet
         self._step_count = 0
 
@@ -118,14 +132,19 @@ class SwarmRelayEnv(ParallelEnv):
         self.agents = self.possible_agents[:]
         self._step_count = 0
 
-        # TODO: sample a random start/end pair on self.city_data road graph,
-        # build self._hvt_route (randomized per episode, not fixed)
+        # TODO: randomize MCV position on the map, then sample the HVT start on
+        # a road HVT_START_RANGE_M from it.
+        # TODO: PRE-SAMPLE the whole route as a path on the in-box road graph,
+        # required to move outward from the MCV. Pre-sampling (not random turns
+        # at junctions) keeps the HVT inside the map by construction, fixes the
+        # episode duration, and is reproducible from the seed. Per-segment speed
+        # from HVT_SPEED_BY_CLASS_MS; exclude primary/trunk so the drone keeps a
+        # 1.4-1.8x speed margin.
         # TODO: place all drones ON the MCV (they launch from it), velocities
         # zero, battery 1.0. The chain forms during transit -- that is part of
         # the mission, not a preamble to it.
-        # TODO: initialize the cue: HVT true position + N(0, CUE_SIGMA_M),
-        # refreshed every CUE_REFRESH_S until the swarm acquires the HVT
-        # directly. NOT a blind search -- see AGENTS.md "Episode structure".
+        # TODO: set self._hvt_cue once = true position + N(0, CUE_SIGMA_M).
+        # Never refresh it. See AGENTS.md "Episode structure" for why.
 
         observations = {a: self._build_observation(i) for i, a in enumerate(self.agents)}
         infos = {a: {} for a in self.agents}
