@@ -98,21 +98,30 @@ physics a swarm-communication simulator may safely omit.
 
 ### RQ2 (secondary) — Does relational structure help, and does it transfer?
 
-Architecture ladder, isolating one factor per rung:
+Architecture ladder, isolating one factor per rung — full spec and the rules that
+keep the comparison honest are in [`AGENTS.md`](../AGENTS.md#model-architectures):
 
 | Architecture | Permutation-invariant | Size-agnostic | Uses link structure |
 |---|---|---|---|
 | Flat MLP (max-N padded + masked) | ✗ | ✗ | ✗ |
-| DeepSets (mean-pool over neighbours) | ✓ | ✓ | ✗ |
+| DeepSets — `ρ(Σᵢ φ(xᵢ))` | ✓ | ✓ | ✗ |
 | **GNN (capacity-weighted edges)** | ✓ | ✓ | ✓ |
 
 Trained at `N=5`, evaluated zero-shot at `N ∈ {3,5,8}` **and on a second city**
 with different morphology. Transfer across urban form is a stronger
 generalisation claim than transfer across swarm size alone, and costs one extra
-OSM extract.
+OSM extract, not extra training.
 
-The MLP needs max-N padding and masking to be evaluable off-N at all; without it
-the comparison is rigged toward the GNN.
+**Why not simply use the GNN.** A GNN that works shows only that a GNN works —
+you cannot claim the graph structure helped without removing it and measuring the
+loss. DeepSets is that control: identical except it ignores edges. Note also that
+you must choose and justify an architecture regardless, so RQ2 is largely writing
+down a decision the project forces anyway.
+
+**Honest expectation:** at `N=5` the graph is tiny and GNN ≈ DeepSets is
+plausible. The interesting result is in the transfer columns. RQ2 is the most
+conventional part of the thesis and the first place to shrink (to DeepSets vs
+GNN) if scope tightens — RQ1 is the contribution.
 
 ### RQ3 (tertiary) — Does role rotation emerge, and what causes it?
 
@@ -131,10 +140,56 @@ short.**
 | B0 | **Scripted geometric heuristic** — relays placed on the MCV→HVT geodesic, one observer, fixed Ptx | Non-learned control. Answers "is MARL earning its keep?" Cheap, disproportionately valuable. |
 | E1 | Learned policy trained at each of F0–F3, all evaluated under F3 | RQ1 |
 | E2 | F3-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
-| E3 | F3-trained with `λ = 0` vs `λ = λ*`; jammer on/off | RQ3 |
-| E4 | F3-trained with a 4-dim action (motion **+** transmit power) | Documents the power-control null result empirically (see §6) |
+| E3 | F3-trained with `λ = 0` vs `λ = λ*` | RQ3 — see below |
+| E4 | F3-trained with a 4-dim action (motion **+** transmit power) | RQ-power null, see below |
+
+**E3, the `λ=0` ablation.** `λ` weights the battery-variance term `−λ·Var(B)`. If
+one drone does all the observing it drains while the others idle, battery levels
+spread, variance rises, penalty grows — so the term is *supposed* to cause role
+rotation. Training with and without it tests whether it actually does. Rotation
+only at `λ>0` gives a clean causal claim; rotation in both means something else
+drives it (likely batteries simply running out and forcing a swap), which is
+arguably the more interesting outcome; rotation in neither means the mechanism
+does not work, and that gets reported too.
+
+**E4, the power null check.** Hands the policy back the fourth action dimension
+and shows it changes nothing. The oracle analysis in §6 already proves this
+analytically; E4 makes it empirical as well. Two independent kinds of evidence
+for ~$20 of GPU time, and it forecloses the obvious defence question *"but did
+you actually try it?"* Cuttable under time pressure, but cheap insurance.
 
 ≥5 seeds per condition. Median and IQR, never mean ± std.
+
+### Compute budget — final runs are a small fraction of the total
+
+| Reported (final) runs | Count |
+|---|---|
+| F0, F1, F2 trained, 5 seeds each | 15 |
+| F3 × {MLP, DeepSets, GNN}, 5 seeds each (the GNN run doubles as RQ1's F3 arm) | 15 |
+| E3 `λ=0` ablation | 5 |
+| E4 motion+power null check | 5 |
+| **Total reported** | **40** |
+
+At 10 M steps and the ≥1000 env-steps/s gate that is ~3 h per run, so **~120
+GPU-hours** for everything that appears in the thesis. RQ2's transfer evaluation
+adds no training — the policies already exist; evaluating them at `N ∈ {3,8}` and
+on the second city is minutes.
+
+**But development dominates.** A realistic project total:
+
+| | Rough count | Note |
+|---|---|---|
+| Debugging / smoke runs | 50–100 | mostly killed within minutes |
+| Curriculum tuning | 20–50 | the big unknown; where projects of this shape stall |
+| Hyperparameter search (equal budget × 3 architectures) | ~30 | short or early-stopped |
+| Crashes, reruns, mistakes | +25 % | always |
+
+**≈300–500 GPU-hours in total, roughly $300–1000 on RunPod.**
+
+The calendar consequence matters more than the money: essentially all of that is
+*development*, and it belongs in Phase 0 before the March 2027 freeze. After the
+freeze only the 40 reported runs execute. This is precisely what the preparation
+window is for.
 
 ---
 

@@ -207,6 +207,51 @@ but flight energy is what the policy actually controls.
 
 ---
 
+## Model architectures
+
+> ⚠️ **Provisional — the specific layer choice is still open.** The *rules* below
+> are settled and protect the comparison's validity; the layer shortlist is a
+> starting point to be revisited before Block G.
+
+### The ladder isolates one factor per rung
+| | Neighbours read as | Permutation-invariant | Size-agnostic | Uses link quality |
+|---|---|---|---|---|
+| Flat MLP | concatenated vector, max-N padded + masked | ✗ | ✗ | ✗ |
+| DeepSets | `ρ(Σᵢ φ(xᵢ))` — shared embed, then pool | ✓ | ✓ | ✗ |
+| GNN | same, messages weighted by `edge_weight` | ✓ | ✓ | ✓ |
+
+MLP → DeepSets isolates permutation invariance. DeepSets → GNN isolates the
+*relational* part, which is RQ2's actual claim. Comparing a GNN only against a
+flat MLP conflates the two and is the weaker experiment.
+
+The MLP needs **max-N padding plus masking** or it cannot be evaluated off-N at
+all, which would rig the transfer comparison toward the GNN.
+
+### Rules that keep the comparison honest
+1. **Do not invent an architecture.** Use a citable PyG layer — GraphSAGE,
+   GATv2, or `NNConv`/`GINEConv` if edge features go into the message. Designing
+   a novel GNN is a different thesis.
+2. **Equal hyperparameter budget** across all three, and say so in the
+   methodology. Tuning the GNN harder than the baselines is the single most
+   likely way this result gets dismissed.
+3. **Match parameter counts** to within ~20 %, so the comparison is not
+   capacity-vs-capacity.
+4. **Sanity floor:** any architecture must beat a random policy and at least
+   match the B0 scripted heuristic. Failing that is a bug, not a finding.
+
+### Depth follows graph diameter
+`N ≤ 8` on a near-complete capacity-weighted graph ⇒ diameter 1–2. Message-passing
+layers beyond the diameter propagate nothing new. **2 layers, ~128 hidden** is the
+justified default — "two layers because the diameter is two" is a far better
+methodology sentence than "we tried 2, 4 and 8."
+
+### Expect a null on the in-distribution rung
+At `N=5` the graph is tiny and GNN ≈ DeepSets is a plausible outcome. The
+interesting result lives in the **off-N and cross-city transfer** columns. A
+clean null, reported as such, is still a contribution.
+
+---
+
 ## Device / performance rules
 
 Training tensors live on `cuda:0`. **Never call `.cpu()`, `.numpy()`, or
