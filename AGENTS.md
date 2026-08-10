@@ -238,6 +238,10 @@ controls.
 hyperparameter affects how fast you learn; the reward defines *what* is optimal.
 Get it wrong and the agent converges beautifully to the wrong behaviour.
 
+Implemented in [`src/env/reward.py`](src/env/reward.py) as a **pure function of a
+state summary** — so a "policy" in the tests is a hand-written list of snapshots
+and the reward is validated with no env, no simulator and no training run.
+
 ### Structure
 ```
 r =  w_mission · [observed AND C_e2e ≥ 5 Mbps]     # team — IS the headline metric
@@ -310,12 +314,26 @@ Write down pairs of behaviours you know how to rank, and require the reward to
 rank them correctly. Each pair gives an inequality; the inequalities pin the
 weights. Compute the energy quantities from the rotary-wing model.
 
-| Required ordering | Constraint |
-|---|---|
-| trying and failing > never trying | `w_idle > w_energy · (cost of flying − cost of hovering)` |
-| holding the mission > hovering efficiently | `w_mission > w_energy · (cost of maintaining the chain)` |
-| meeting the threshold ≈ exceeding it | capacity term must **saturate** — no reward past ~1.5× |
-| mission success > perfect battery balance | `w_mission > λ · Var_max` |
+Encoded as `weight_constraints_satisfied()` and asserted in `test_reward.py`,
+including a guard that each constraint actually rejects a bad setting.
+
+| Required ordering | Constraint | Status |
+|---|---|---|
+| trying beats loitering | `w_idle > w_energy·(e_dash − e_loiter)` | ✅ |
+| full success beats safe partial success | `w_mission > w_idle` | ✅ |
+| mission beats perfect battery balance | `w_mission > λ·Var_max` | ✅ |
+| energy cannot veto flying | `w_mission > w_energy·e_dash` | ✅ |
+| control effort stays a heuristic | `w_effort < 0.1·w_energy` | ✅ |
+
+**Chosen values:** `w_mission=1.0` (the unit), `w_idle=0.3`, `w_energy=0.15`,
+`w_effort=0.01`, `λ=0.5` (swept), `k=10`.
+
+> **The energy inequality has the opposite sign to intuition.** Because the power
+> curve is U-shaped, flying at 13 m/s costs **0.64** of hover draw and even a
+> 25 m/s dash costs **1.00**. Flying is not more expensive than hovering, so the
+> lazy optimum is not an energy story — `w_idle` exists to break a tie that
+> energy alone would leave open, and it is sized against dash-versus-loiter, not
+> motion-versus-stillness.
 
 **Only `λ` is swept**, because the right amount of load-balancing pressure is not
 derivable from physics. That is a far better justification than "we did not know."
@@ -343,11 +361,20 @@ PPO default `γ=0.99` the horizon is 100 steps, so the agent is structurally bli
 to the hard part and would optimise the easy opening. Use **`γ ≈ 0.997–0.999`**.
 
 ### Validate the reward before training anything
-Score hand-written policies under the reward and assert the ranking:
-`B0 heuristic > fixed formation > all-drones-chase > never leaves the MCV`.
-If that ordering fails, the reward is wrong — found in minutes rather than after
-a three-hour run. Treat this as a test file; the reward is a specification
-artefact like the channel model.
+`test_reward.py` scores four scripted policies and asserts the ranking. Current
+values (100 steps, mean over 5 agents):
+
+| Policy | Return | Per step |
+|---|---|---|
+| B0 heuristic | **+62.2** | +0.62 |
+| fixed formation | +21.7 | +0.22 |
+| all-chase, no relay | −11.0 | −0.11 |
+| lazy, never launches | **−44.6** | −0.45 |
+
+Note the ordering is *strict* at every rung, and the two failure modes are
+separated: seeing without relaying beats seeing nothing, but never beats a
+working chain. If that ordering ever breaks, the reward is wrong — found in
+milliseconds rather than after a three-hour run.
 
 Log **every term separately** in W&B. The total is nearly useless for diagnosis;
 one term contributing 95 % of the magnitude is the signature of a scaling error
