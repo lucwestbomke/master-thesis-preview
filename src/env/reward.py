@@ -7,7 +7,7 @@ no training run. It also means those tests survive the batched env replacing the
 PettingZoo stub, because they never depended on either.
 
 Design rationale, weight-setting method and the known degenerate optima are in
-AGENTS.md -> Reward. The short version:
+docs/REWARD.md. The short version:
 
 - The dominant term IS the headline metric (fraction of steps mission-capable),
   so the policy optimises exactly the number that gets reported.

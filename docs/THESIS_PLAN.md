@@ -30,7 +30,7 @@ escalates 1 → 2 → 3 hops during the episode. Episodes run a fixed 600 steps
 (240 s) or until a battery dies. Mission failure is a **per-step condition**, not
 a terminal event — terminating on it lets the policy learn never to acquire the
 target, and stops a random initial policy from ever reaching the tracking phase.
-See `AGENTS.md` → Episode structure.
+See [`ENVIRONMENT.md`](ENVIRONMENT.md) → Episode structure.
 
 ### The observation envelope — an angle constraint, not a distance one
 
@@ -92,7 +92,7 @@ afterwards.
 
 **Curriculum is orthogonal to this.** Fidelity is fixed at env construction and
 never changes within a run; the curriculum varies within every run and uses an
-identical schedule across all conditions. See `AGENTS.md` → Curriculum.
+identical schedule across all conditions. See [`ENVIRONMENT.md`](ENVIRONMENT.md) → Curriculum.
 
 **Hypothesis:** the gap is dominated by **occlusion**. A radius model lets the
 policy believe it is connected straight through a building, so it learns
@@ -111,7 +111,7 @@ physics a swarm-communication simulator may safely omit.
 ### RQ2 (secondary) — Does relational structure help, and does it transfer?
 
 Architecture ladder, isolating one factor per rung — full spec and the rules that
-keep the comparison honest are in [`AGENTS.md`](../AGENTS.md#model-architectures):
+keep the comparison honest are in [`MODELS.md`](MODELS.md):
 
 | Architecture | Permutation-invariant | Size-agnostic | Uses link structure |
 |---|---|---|---|

@@ -1,787 +1,166 @@
 # AGENTS.md — UAV Swarm MARL Thesis
 
+Entry point for any agent or human working in this repo. Kept deliberately short;
+detail lives in `docs/` and is read **on demand**.
+
 ## Mission
 A swarm of `N` UAVs must simultaneously **observe** a moving ground High-Value
-Target (HVT) in a real city, **relay** the resulting sensor feed back to a fixed
-Mobile Command Vehicle (MCV) over a multi-hop chain at ≥5 Mbps end-to-end, and
-**survive** on finite batteries while a jammer mounted on the HVT raises the
-noise floor around it. Buildings block LoS, so the relay chain is geometrically
-necessary — no single drone can usually see both the HVT and the MCV.
-
-The full research design (research questions, hypotheses, baselines, metrics,
-timeline) lives in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md). **Read it before
-making design decisions.** Short version:
+Target (HVT) in Frankfurt, **relay** the sensor feed to a Mobile Command Vehicle
+(MCV) over a multi-hop chain at ≥5 Mbps end-to-end, and **survive** on finite
+batteries while a jammer riding the HVT degrades links near it. Buildings block
+line of sight, so the relay chain is geometrically necessary.
 
 - **RQ1 (primary):** which physical effects must a channel model include for
-  learned policies to transfer? Train one policy at each fidelity rung — **F0**
-  connectivity radius (`R` calibrated to F4's median link range) → **F1**
-  +occlusion → **F2** +SINR/Shannon rate → **F3** +jammer → **F4** +multi-hop
-  rate division — and evaluate *all of them* under F4. Each rung adds exactly
-  one physical effect so the gaps attribute the answer. Hypothesis: the gap is
-  dominated by **occlusion**.
-- **RQ2:** MLP → DeepSets → GNN ladder; zero-shot transfer across `N ∈ {3,5,8}`
-  **and** across city morphology.
+  learned policies to transfer? Train one policy per fidelity rung F0–F4,
+  evaluate all under F4. Hypothesis: **occlusion** dominates.
+- **RQ2:** MLP → DeepSets → GNN; zero-shot transfer across `N ∈ {3,5,8}` and
+  across city morphology.
 - **RQ3:** does the observer role **hand off** as sightlines change, and is the
-  handoff coordinated and *anticipatory*? Ablate the neighbours' `sees_hvt`
-  observation; separately ablate `λ`. Geometric handoff replaced energy-driven
-  rotation because a realistic airframe depletes only 8–17 % of battery per
-  240 s episode, so `Var(B)` had nothing to act on.
-
-> **Action space is motion only (3-dim).** Transmit power is fixed at 30 dBm.
-> Three independent justifications for adaptive Ptx — energy, interference,
-> detectability — were each tested numerically against fair baselines and each
-> came out null. Do not reintroduce it as a control dimension without reading
-> [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md); condition E4 keeps it
-> only to reproduce the null empirically.
-
-## Stack (do not substitute without asking)
-- Python 3.12, PyTorch. Dependency management via **uv** (`uv.lock` is authoritative).
-- Custom **batched tensor env** with a PettingZoo `ParallelEnv` adapter — NOT
-  Isaac Sim / Isaac Lab (deliberately rejected: too heavy for the timeline,
-  slower iteration, and occlusion needs geometric ray/polygon checks rather than
-  rigid-body physics).
-- skrl for MAPPO (CTDE: centralized critic, decentralized actors), driven through
-  a **custom multi-agent wrapper**, not `PettingZooWrapper` — see Device rules.
-- PyTorch Geometric (PyG) for GNN actor/critic, dynamic per-timestep graph
-- osmnx + shapely for OSM building footprints and road network — **offline only**
-- Weights & Biases for run tracking, incl. periodic rendered eval videos
-- Hydra or plain YAML for configs
-
-## Explicitly rejected — do not reintroduce without discussion
-- **NVIDIA Sionna** in the training loop: TensorFlow-based; crossing framework
-  boundaries every env step breaks the stay-in-VRAM design. Closed-form PyTorch
-  path loss is used instead. Sionna may be used **offline** to validate the
-  closed-form model — never inside `step()`.
-- **stable-baselines3, Ray/RLlib, OmniDrones, SUMO, NS-3:** wrong paradigm or
-  redundant with the above.
-- **EW detectability / EMCON modelling:** interesting, but widens the mission
-  objective past what a 5-month thesis can defend. Future work only.
+  handoff coordinated and anticipatory?
 
 ---
 
-## Physics / math — implemented and unit-tested
+## Where the project is
 
-Implemented in [`src/env/channel.py`](src/env/channel.py),
-[`src/env/routing.py`](src/env/routing.py) and
-[`src/env/energy.py`](src/env/energy.py), with hand-computed assertions in the
-co-located test files. **Do not change these formulas without updating the tests
-and checking against the cited standard** — they appear in the methodology
-chapter and must stay traceable.
-
-### Link classes — one model does not fit all
-| Link | Model | Why |
+| Block | What | State |
 |---|---|---|
-| Drone ↔ drone (A2A) | FSPL + 20 dB blockage penalty when occluded | Both endpoints are above rooftop; a ground street-canyon model does not describe this at all. |
-| Drone ↔ HVT / MCV (A2G) | **3GPP TR 36.777 UMi-AV** | TR 38.901 UMi is specified for UE heights 1.5–22.5 m and is **not valid for aerial nodes**. |
-| Jammer → drone | Same A2G UMi-AV | Jammer is ground-mounted on the HVT. |
+| **A** | Channel, routing, energy, reward — all pure, batched, tested | ✅ **done**, 103 tests |
+| **B** | Frankfurt OSM/LoD2 pipeline → buildings + road graph as tensors | ⬅️ **next** |
+| C | Occlusion: batched torch segment-vs-box (slab method) | not started |
+| D | Batched env core + PettingZoo adapter; **≥1000 steps/s gate** | not started |
+| E | Renderer + B0 scripted heuristic baseline | not started |
+| F | Fidelity levels F0–F4 as config flags | not started |
+| G | MAPPO integration + curriculum | not started |
+| H | Sionna offline validation of the closed-form channel | not started |
 
-> ⚠️ The TR 36.777 coefficients in `channel.py` are marked `TODO(verify)`. Check
-> them against the actual 3GPP document before citing. Same for the rotary-wing
-> energy constants.
+Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
+environment end of March 2027** — results before are pilots, after are thesis
+material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 
-### SINR — linear domain, with intra-swarm interference
-```
-SINR_lin(i→j) = P_rx(i→j) / ( Σ_{k∉{i,j}, k active} P_rx(k→j) + P_jam(j) + N0 )
-SINR_dB       = 10·log10(SINR_lin)
-```
-Interference and noise sum in the **linear** domain. The earlier spec had
-`SINR_dB = P_sig − (P_jam + N0)`, which adds two dBm quantities — a product, not
-a sum — and returned ~+100 dB for realistic urban links, silently deleting the
-jammer from every experiment. A regression test pins this.
+Block B is specified in [`docs/BLOCK_B.md`](docs/BLOCK_B.md).
 
-Node `j`'s own transmission is excluded via a zeroed diagonal — half-duplex, it
-does not receive its own emission.
+---
 
-**`tx_mask` carries the MAC assumption — set it deliberately.** The routing
-divisor `min(n_hops, 3)` presumes a spatial-reuse TDMA schedule, under which a
-≤3-hop chain never has two hops active at once. So when evaluating a link, the
-mask must contain only the transmitters active *in that slot* — for short chains,
-one node, and SINR reduces to signal over jammer-plus-noise. Passing every node
-while also applying the divisor double-counts the half-duplex cost, and made a
-feasible 3-hop chain look infeasible during scenario design. The
-uncoordinated-access mode (all nodes concurrent, no divisor) stays available for
-worst-case analysis. Pinned by tests.
+## Read before you change things
 
-### Noise floor — derived, never hardcoded
-```
-N0_dBm = -174 + 10·log10(B_Hz) + NF_dB        # B=10 MHz, NF=7 dB → -97.0 dBm
-```
+| File | Read it when |
+|---|---|
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | **always, first** — every entry was proposed then killed on evidence |
+| [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md) | making a research decision: RQs, conditions, metrics, timeline |
+| [`docs/PHYSICS.md`](docs/PHYSICS.md) | touching channel / routing / energy / scenario parameters |
+| [`docs/REWARD.md`](docs/REWARD.md) | touching the reward or its weights |
+| [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | building the env: episodes, cue, curriculum, observations |
+| [`docs/MODELS.md`](docs/MODELS.md) | building actors/critics |
+| [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md) | before proposing adaptive transmit power |
+| [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | the current task |
 
-### Rate — Shannon with implementation loss and a modulation cap
-```
-SE     = min( 0.75 · log2(1 + SINR_lin), 7.4 )   b/s/Hz
-C_Mbps = B_Hz · SE / 1e6
-```
-Unbounded Shannon reports throughput no real radio delivers.
+---
 
-### Multi-hop end-to-end capacity and routing
-```
-C_e2e = min_i(C_i) / min(n_hops, 3)            # half-duplex with spatial reuse
-```
-Half-duplex relays on one channel must be scheduled, but hops far enough apart
-transmit concurrently, so a linear chain saturates near **1/3** of single-link
-capacity rather than degrading as `1/n` (Li et al., MobiCom 2001; cf. Gupta &
-Kumar 1999).
+## Hard rules
 
-> A `/n_hops` divisor **plus** full concurrent interference double-counts: `/n`
-> is the pure-TDMA schedule, in which only one hop is active and there is no
-> intra-chain interference to charge. The two cannot both be true. `min(n, 3)`
-> is the form consistent with the interference model in `channel.py`.
+**Device.** Training tensors live on `cuda:0`. **Never call `.cpu()`, `.numpy()`
+or `.item()` inside env `step()` or the training hot loop** — `.item()` forces a
+GPU sync and is the easy one to miss. Local dev is Apple Silicon (CPU/MPS), toy
+configs only. Guard device selection; never silently degrade a real run to CPU.
 
-Short chains are still preferred — that pressure now comes from physics rather
-than an arbitrary factor: every extra hop is another concurrent transmitter
-raising everyone's noise floor, and must itself clear the SINR bar.
+**Throughput.** ≥1000 env-steps/s batched on GPU. A **gate, not an aspiration** —
+measure it before building anything on top of the env.
 
-`reuse_limit` is a **parameter, not a constant** (`=max_hops` recovers strict
-TDMA, `=1` removes the penalty). Report the headline result under at least two
-duplexing settings — it converts a soft modelling assumption into a robustness
-check.
+**Batched core, thin adapter.** The env core carries a leading `num_envs`
+dimension. The PettingZoo adapter exists for API-compliance tests and visual
+debugging only; training uses a custom skrl multi-agent wrapper. (skrl's
+`PettingZooWrapper` round-trips through NumPy every step at `num_envs == 1`.)
 
-Path selection maximises `min_i(C_i)/min(n,3)` via a hop-limited widest-path DP:
-```
-W[h][j] = max_i min( W[h-1][i], C[i][j] )      # answer: max_h W[h][dst]/min(h,3)
-```
-Sources are all drones currently holding a valid HVT observation; if none, mission
-capacity is 0. Fully batched, exact, no per-env Python loop.
+**Geometry offline.** `osmnx`/`shapely` are CPU-and-NumPy-only — used **only** in
+`scripts/prep_osm.py` to bake buildings into a tensor. Runtime occlusion is
+vectorized segment-vs-box (slab method) in pure torch. Buildings are 2.5D: check
+the segment's altitude across the 2D intersection interval, not just a planar
+crossing.
 
-### Bandwidth and threshold — chosen so the constraint actually binds
-`B = 10 MHz`, threshold `5 Mbps` end-to-end. A 3-hop chain then needs **+4.8 dB
-SINR per hop**. At the originally-specified 20 MHz a single hop needed only
-−7.2 dB, which a swarm satisfies by accident and which makes the jammer
-decorative.
+**Formulas are traceable.** Do not change path-loss / SINR / capacity / energy
+formulas without updating the hand-computed tests and checking the cited
+standard. They appear in the methodology chapter.
 
-### Scenario — derived, not chosen
-Every parameter is fixed from an external source, and the operating area is then
-*solved for* so that a single drone fails while the swarm succeeds. Regenerate
-with [`scripts/scenario_design.py`](scripts/scenario_design.py) and
-[`scripts/link_budget_check.py`](scripts/link_budget_check.py);
+**Multi-seed.** ≥5 seeds for anything reported as a finding. Median + IQR, never
+mean ± std — RL returns are not normally distributed. Never report single runs.
+
+---
+
+## Never do these
+
+- ⛔ **Reintroduce transmit power as an action.** Three framings, three nulls —
+  [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md). Action space is motion
+  only (3-dim); Ptx is fixed at 30 dBm. E4 reproduces the null deliberately.
+- ⛔ **Raise the Ptx ceiling.** At 40 dBm a *blocked* A2A link carries 15 Mbps
+  over 2.8 km — one drone spans the map and the relay chain becomes pointless.
+- ⛔ **Use channel fidelity as a curriculum axis.** It is RQ1's independent
+  variable. Same reasoning forbids ramping building density.
+- ⛔ **Use `SAGEConv`** for the GNN rung. It cannot take edge features, so it
+  silently collapses the GNN into DeepSets and RQ2 measures nothing.
+- ⛔ **Terminate the episode on mission failure.** The policy learns never to
+  acquire, and a random initial policy never reaches the tracking phase.
+- ⛔ **Sweep more than `λ`.** Other weights are pinned by behavioural orderings
+  in [`docs/REWARD.md`](docs/REWARD.md).
+- ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
+- ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
+  and `energy.py` mean exactly that.
+
+---
+
+## Settled parameters
+
+| | Value | Basis |
+|---|---|---|
+| City / area | Frankfurt, **1500 m** box | heterogeneous: low fabric gives a workable observation envelope, towers block A2A |
+| Ptx | **30 dBm fixed** | UAV tactical MANET radios are 0.5–2 W |
+| Jammer | 30 dBm in-band, rides the HVT | vehicle C-UAS barrage emitter |
+| Carrier / bandwidth | 3.5 GHz / **10 MHz** | so the 5 Mbps target actually binds |
+| Rate target | **5 Mbps** end-to-end | compressed HD EO/IR feed |
+| Flight altitude | 80 m nominal | above fabric, below towers; inside TR 36.777's 22.5–300 m band |
+| Drone speed | 20 m/s cruise, 25 m/s dash | 1.4–1.8× margin over the HVT |
+| HVT | 300–500 m from MCV, drives away | chain escalates 1 → 2 → 3 hops |
+| Episode | **600 steps × 0.4 s** = 240 s | covers the escalation to 3 hops |
+| Swarm | `N = 5` trained; 3/5/8 evaluated | |
+| Discount | **γ ≈ 0.997–0.999** | default 0.99 is blind to the hard end of the episode |
+
+Regenerate the sizing with [`scripts/scenario_design.py`](scripts/scenario_design.py)
+and [`scripts/link_budget_check.py`](scripts/link_budget_check.py);
 `tests/test_scenario_sizing.py` pins the trade-off table.
 
-| Parameter | Value | Basis |
-|---|---|---|
-| City | **Frankfurt**, 1500 m box over Bankenviertel + fabric | heterogeneous: low-rise gives a workable observation envelope, towers block A2A |
-| Operating area | **1500 m** | solo drone manages ~1.7 Mbps (fails); swarm ~24 Mbps (feasible) |
-| Ptx | **30 dBm, fixed** | UAV tactical MANET radios are 0.5–2 W |
-| Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter |
-| Flight altitude | 80 m nominal | above fabric, below towers; inside TR 36.777's 22.5–300 m band |
+---
 
-> ⚠️ **Never raise Ptx to make the energy term measurable.** At 40 dBm a
-> *blocked* A2A link still carries 15 Mbps over 2.8 km, so one drone spans any
-> simulable map and the relay chain becomes unnecessary. Range grows with power
-> far faster than the mission area can absorb.
+## Stack (do not substitute without asking)
+Python 3.12 · PyTorch · **uv** (`uv.lock` authoritative) · skrl (MAPPO, CTDE) ·
+PyTorch Geometric · osmnx + shapely (offline only) · Weights & Biases ·
+Hydra or plain YAML.
 
-### Observation envelope — an angle constraint, not a distance one
-The ray must clear the roofline, which fixes an elevation angle (~66° for
-Frankfurt), not a range:
-- **across-street:** within `(W/2)·h/H_b` — 36 m at 80 m altitude, 91 m at 200 m.
-  Flying higher buys lateral freedom.
-- **along-street:** the roofline never blocks; the sensor limits instead
-  (~830 m to recognise a vehicle, ~2.8 km to detect one).
-
-So the envelope is a wedge down the street plus an overhead cone — **not a
-36 m disc**. Compute it from real footprints, never from a radius.
-
-### Energy — implemented in [`src/env/energy.py`](src/env/energy.py)
-```
-P(V) = P_0·(1 + 3V²/U_tip²)                              # blade profile  ↑ with V
-     + P_i·(√(1 + V⁴/4v_0⁴) − V²/2v_0²)^½                # induced        ↓ with V
-     + ½·d_0·ρ·s·A·V³                                    # parasite       ↑ with V
-P_total = P(‖v‖)/η_drivetrain + κ·‖a‖² + P_tx_DC
-```
-Standard rotorcraft aerodynamics, as presented in **Zeng, Xu & Zhang (2019)**.
-Induced power *falls* with forward speed faster than profile power rises, so the
-curve is **U-shaped** — for the default airframe the minimum sits at **13.3 m/s
-and costs 58 % less than hovering**.
-
-> The earlier `P_hover + α‖v‖²` form asserted the opposite, that hovering is
-> cheapest. Energy sets the cost of the observer role, so that error would have
-> inverted the behaviour the reward is meant to produce. A regression test pins
-> it.
-
-**Constants are derived, not quoted.** Momentum theory gives the dominant hover
-term from mass and rotor geometry alone (`v_0 = √(W/2ρA)`), which is checkable in
-a way a copied table is not — and it yields a validation a paper's example
-constants cannot: **predicted endurance against published flight time.** The
-default ~5.9 kg / 21-inch airframe predicts **56.8 min** of hover on 548 Wh
-against ~55 min published.
-
-Two details that matter numerically:
-- Battery drain is **electrical**, not shaft — divide by drivetrain efficiency
-  (~0.80). Omitting it overstates endurance by ~25 %.
-- The induced bracket is evaluated as `1/(√(1+x²)+x)`, algebraically identical to
-  `√(1+x²)−x` but without the catastrophic cancellation.
-
-`κ‖a‖²` is an explicit **control-effort heuristic**, not physics; it defaults to
-zero and must be opted into. `P_tx_DC` is a **constant** (Ptx is fixed), ~7 W or
-1.6 % of draw — kept for completeness, but flight energy is what the policy
-controls.
-
-> ⚠️ **Battery does not bind in one episode.** 240 s of hovering burns ~7 % of a
-> 548 Wh pack. This measurement is what reframed RQ3 from energy-driven rotation
-> to geometric handoff, and why initial charge is randomised in `[0.3, 1.0]`.
-> A test asserts it stays under 25 %; if that ever fails, revisit RQ3.
-
-> ⚠️ `tip_speed_ms`, `solidity`, `profile_drag_coeff`, `fuselage_drag_ratio` are
-> `TODO(verify)` — not usually published per airframe, so they use documented
-> typical ranges. Same standing as the TR 36.777 coefficients.
-
-### Graph
-- GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):
-  `E_ij = sigmoid((C_ij − 5.0) · gamma)`
-- Jammer is mounted on the HVT and moves with it.
+**Rejected:** Isaac Sim/Lab (too heavy; occlusion needs ray/polygon, not rigid
+bodies) · Sionna *in the training loop* (TF boundary every step; offline
+validation only) · stable-baselines3, Ray/RLlib, OmniDrones, SUMO, NS-3 · EW
+detectability modelling.
 
 ---
 
-## Reward
-
-**This is the highest-leverage decision in the project.** Every other
-hyperparameter affects how fast you learn; the reward defines *what* is optimal.
-Get it wrong and the agent converges beautifully to the wrong behaviour.
-
-Implemented in [`src/env/reward.py`](src/env/reward.py) as a **pure function of a
-state summary** — so a "policy" in the tests is a hand-written list of snapshots
-and the reward is validated with no env, no simulator and no training run.
-
-### Structure
+## Layout & conventions
 ```
-r =  w_mission · [observed AND C_e2e ≥ 5 Mbps]     # team — IS the headline metric
-   + γ·Φ(s′) − Φ(s)                                 # potential-based shaping
-   − w_idle    · [HVT not observed]                 # team
-   − w_energy  · normalised power draw              # individual
-   − λ         · Var(B_1..B_N)                      # team
-   − w_effort  · ‖a‖²                               # individual, small
+src/env/       channel, routing, energy, reward  (built)
+               occlusion, batched core           (to build)
+src/models/    GNN / DeepSets / MLP actor-critic
+src/training/  skrl wrappers, entrypoints
+scripts/       offline data prep + scenario tooling
+configs/       YAML per experiment condition
+tests/         cross-module only — unit tests are CO-LOCATED
+docs/          reference, read on demand
 ```
-
-### The primary term is the metric, deliberately
-`fraction of steps mission-capable` is both the dominant reward term and the
-headline metric. Keeping them identical means the policy optimises exactly the
-number that gets reported — no gap to explain later.
-
-### Potential-based shaping — the only safe way to add guidance
-Adding `F = γ·Φ(s′) − Φ(s)` for **any** `Φ` provably leaves the optimal policy
-unchanged (Ng, Harada & Russell 1999): summed over a trajectory the terms
-telescope to `γ^T Φ(s_T) − Φ(s_0)`, which depends only on the endpoints and so
-adds the same constant to every policy's return.
-
-> A naive "bonus for being close to the HVT" is a **salary** — 400 steps of
-> loitering pays 15× what 20 steps pays, and it keeps growing whether or not the
-> mission is ever accomplished. PBRS is a **one-time payment** for real progress;
-> round trips cancel exactly, so there is nothing to farm.
-
-Two rules:
-1. **`Φ = 0` at genuine terminal states** (battery death), or `γ^T Φ(s_T)`
-   survives the telescoping and reintroduces a policy-dependent bias. Truncation
-   at 600 steps is fine provided the value is bootstrapped there.
-2. **The scale of `Φ` is free.** Because it cannot move the optimum, it is the
-   one quantity in the reward tunable purely for learning speed with zero
-   methodological consequence. Every other weight changes the objective.
-
-### The potential
-```
-Φ(s) = k · [ w_a·Φ_approach + w_o·Φ_observe + w_l·Φ_link ]      k ≈ 10
-```
-| Component | Form | Job |
-|---|---|---|
-| `Φ_approach` | `1 − min(d_min, D_ref)/D_ref`, `d_min` = nearest drone→HVT, `D_ref` ≈ map diagonal | coarse; non-zero anywhere on the map so the agent is never blind |
-| `Φ_observe` | `sigmoid(clearance_best / τ_c)`, `τ_c ≈ 15 m` | fine; rewards correct *geometry*, not mere proximity |
-| `Φ_link` | `sigmoid((C_e2e − 5.0) / τ_l)`, `τ_l ≈ 2 Mbps` | gradient below threshold, where the binary indicator has none |
-
-Each lands in `[0,1]`. Suggested `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
-the link, which is the hardest and last-learned stage.
-
-**The handover is the design.** Far out only `Φ_approach` moves; once a drone is
-close it saturates and `Φ_observe` takes over; once observing, only `Φ_link`
-still improves. Three mission stages, each with a live gradient, no dead zones.
-
-Three traps this avoids:
-- **Distance to the HVT is the wrong measure.** The observation envelope is a
-  wedge down the street plus an overhead cone, not a disc — a drone 20 m away
-  across the street sees nothing while one 300 m down the street sees fine.
-  Hence `clearance`, not range.
-- **Per-drone potentials cause clustering.** All five drones get pulled onto the
-  HVT and nobody relays. `d_min` and `clearance_best` are **team** quantities, so
-  once one drone has the target the pull stops for everyone else.
-- **A product form deadlocks at t=0.** `Φ_observe × Φ_link` is flat at episode
-  start, when both are ≈0 and neither can improve without the other. **Sum.**
-
-> ⚠️ `τ_c` and `τ_l` are starting values reasoned from geometry (22 m buildings,
-> 8 m of travel per step) and from the threshold (40 % of 5 Mbps). **Re-tune them
-> against the real env once Block D runs** — safely, since they live in the
-> potential.
-
-### Setting the remaining weights — by behavioural ordering, not sweeping
-Write down pairs of behaviours you know how to rank, and require the reward to
-rank them correctly. Each pair gives an inequality; the inequalities pin the
-weights. Compute the energy quantities from the rotary-wing model.
-
-Encoded as `weight_constraints_satisfied()` and asserted in `test_reward.py`,
-including a guard that each constraint actually rejects a bad setting.
-
-| Required ordering | Constraint | Status |
-|---|---|---|
-| trying beats loitering | `w_idle > w_energy·(e_dash − e_loiter)` | ✅ |
-| full success beats safe partial success | `w_mission > w_idle` | ✅ |
-| mission beats perfect battery balance | `w_mission > λ·Var_max` | ✅ |
-| energy cannot veto flying | `w_mission > w_energy·e_dash` | ✅ |
-| control effort stays a heuristic | `w_effort < 0.1·w_energy` | ✅ |
-
-**Chosen values:** `w_mission=1.0` (the unit), `w_idle=0.3`, `w_energy=0.15`,
-`w_effort=0.01`, `λ=0.5` (swept), `k=10`.
-
-> **The energy inequality has the opposite sign to intuition.** Because the power
-> curve is U-shaped, flying at 13 m/s costs **0.64** of hover draw and even a
-> 25 m/s dash costs **1.00**. Flying is not more expensive than hovering, so the
-> lazy optimum is not an energy story — `w_idle` exists to break a tie that
-> energy alone would leave open, and it is sized against dash-versus-loiter, not
-> motion-versus-stillness.
-
-**Only `λ` is swept**, because the right amount of load-balancing pressure is not
-derivable from physics. That is a far better justification than "we did not know."
-
-> The lazy optimum survives fixed-length episodes: never acquiring means never
-> flying out, which *saves energy*. Zero mission reward at low cost beats zero
-> mission reward at high cost. `w_idle` exists to break exactly that, and the
-> first constraint above sizes it.
-
-### Known degenerate optima — check for these explicitly
-- **Free-riding.** Mission reward is shared, energy cost is individual, so the
-  selfish optimum is to let the others work. `λ·Var(B)` is the counter-mechanism,
-  not merely a rotation device.
-- **Variance term's own optimum.** All drones hovering ⇒ `Var(B)=0` ⇒ zero
-  penalty. Doing nothing scores perfectly on that term and must be dominated.
-- **Capacity over-optimisation.** Reward capacity linearly and the swarm clusters
-  for 74 Mbps when 5 is required, abandoning coverage. Saturate.
-- **Observation clustering.** Reward per-drone sighting and nobody relays. Reward
-  the *mission*, not the sighting.
-
-### Discount factor is part of the reward design
-Effective horizon is `1/(1−γ)`. The episode is 600 steps and **difficulty is
-concentrated at the end** — the 3-hop regime only appears after t≈120 s. At the
-PPO default `γ=0.99` the horizon is 100 steps, so the agent is structurally blind
-to the hard part and would optimise the easy opening. Use **`γ ≈ 0.997–0.999`**.
-
-### Validate the reward before training anything
-`test_reward.py` scores four scripted policies and asserts the ranking. Current
-values (100 steps, mean over 5 agents):
-
-| Policy | Return | Per step |
-|---|---|---|
-| B0 heuristic | **+62.2** | +0.62 |
-| fixed formation | +21.7 | +0.22 |
-| all-chase, no relay | −11.0 | −0.11 |
-| lazy, never launches | **−44.6** | −0.45 |
-
-Note the ordering is *strict* at every rung, and the two failure modes are
-separated: seeing without relaying beats seeing nothing, but never beats a
-working chain. If that ordering ever breaks, the reward is wrong — found in
-milliseconds rather than after a three-hour run.
-
-Log **every term separately** in W&B. The total is nearly useless for diagnosis;
-one term contributing 95 % of the magnitude is the signature of a scaling error
-and is invisible in the aggregate.
-
-### Constraints that protect the experiments
-- The reward function must be **byte-identical across F0–F4**. Only the physics
-  feeding it changes. Consequence to expect rather than discover: under F0
-  capacity is binary, so `Φ_link` is degenerate and carries no gradient — that is
-  part of what "training under a simplified channel" *means*, not a bug.
-- The reward must **not depend on agent index**, or homogeneity breaks and the
-  "roles emerge rather than being assigned" claim collapses.
-
-### Episode structure — launch, cue, route
-
-**Launch.** Drones start parked on the MCV and fly out. The chain forms during
-transit; that is a phase of the mission, not a preamble. It also creates the
-energy tension — flying out costs battery, so the swarm cannot send everyone
-everywhere.
-
-**Start close, drive away.** The HVT starts **300–500 m** from the MCV and drives
-outward. This resolves a conflict that otherwise has no solution: the MCV must be
-*far* for a relay chain to be necessary (a single drone covers everything inside
-~1000 m), but *near* for the cue to still be useful on arrival. Starting close and
-opening the range gives both, and the chain requirement escalates on its own:
-
-| Time | Range | Solo drone | Chain |
-|---|---|---|---|
-| t=0 | 400 m | 18.5 Mbps | 1 hop |
-| t=60 s | 700 m | 9.5 Mbps | 1 hop |
-| t=120 s | 1000 m | 4.7 Mbps | **2 hops** |
-| t=240 s | 1400 m | 2.1 Mbps | **3 hops** |
-
-The episode is therefore its own curriculum — easy at the start, hard at the end —
-so early training gets dense reward from the opening instead of hitting a wall.
-
-**Cue — its job is to break directional symmetry, not to solve acquisition.**
-One-shot at launch, `σ ≈ 150 m`, **never refreshed**.
-
-> An earlier draft refreshed the cue every 10 s from an "external ISR asset."
-> That is incoherent: a sensor that can persistently track the HVT through a city
-> makes the swarm redundant. The refresh was a mechanism invented to fix cue
-> staleness, with a justification bolted on afterwards. The correct fix was to
-> shorten transit by starting close.
-
-Precision barely matters — drift during transit swamps `σ` anyway. Without *any*
-cue the target sits in a 300–500 m annulus in any direction; five drones would
-find it, but a random initial policy never would, so early training gets no
-gradient. The cue supplies a vector to fly along from step one. That is all it is
-for.
-
-Acquisition difficulty is then set by **street topology, not by a parameter**.
-The 830 m recognition range holds only down a clear straight street; Frankfurt's
-streets bend, so 100–400 m is more typical. How often long sightlines actually
-occur is an empirical question — **measure it in Block B**, do not assume it.
-
-**Route — pre-sampled, not random-at-junctions.** At reset, sample the full route
-as a path on the road graph *restricted to the map box*. Random turning behaves
-badly: it doubles back, stalls in cul-de-sacs, oscillates around one block, and
-leaves the map. Preventing all that amounts to writing a route sampler by
-accident. Pre-sampling gives, by construction: the target never leaves the box
-(no separate border logic needed), a known episode duration, reproducibility from
-a seed, and a route that can be *required* to move away from the MCV. It costs
-nothing in difficulty — the drones cannot see the future route either way.
-
-**Speeds — from the OSM road class, not a constant.**
-
-| Road class | Limit | m/s |
-|---|---|---|
-| residential | 30 km/h | 8.3 |
-| secondary | 50 km/h | 13.9 |
-| primary | 60 km/h | 16.7 |
-
-> **Exclude primary/trunk from route sampling.** The drone must be meaningfully
-> faster than the target or tracking is impossible, and at 20 m/s cruise the
-> margin over a 60 km/h target is only 1.2× — not enough to recover after a turn.
-> Restricting to residential/secondary gives 1.4–1.8×. Defensible anyway: a
-> target moving covertly through a city uses ordinary streets.
-
-Drone: **20 m/s cruise, 25 m/s dash.**
-
-**Randomise per episode:** MCV position in the map, HVT start on a road 300–500 m
-from it, and the route. The policy must not be able to memorise one layout.
-
-**Termination — mission failure must NOT terminate the episode.** Two independent
-failure modes if it does:
-
-1. *Termination hacking.* If the link requirement starts only at acquisition, the
-   optimal policy is to never acquire, never fail, and loiter.
-2. *An undesigned curriculum.* Under the old rule (`C_e2e < 5 Mbps` for >5
-   consecutive steps), a random initial policy dies around step 6 and the agent
-   only ever experiences the first six steps. It cannot learn to track because it
-   never reaches the tracking phase.
-
-So:
-- **Fixed-length episodes** (truncation), ~600–1200 steps at `dt = 0.25–0.5 s`.
-- **Battery exhaustion still terminates** — physical, and unhackable, since
-  hovering at the MCV burns power too.
-- **Mission failure is a per-step condition**, feeding reward and metrics. The
-  chain may drop and re-form, which is what real missions do.
-- **Per-step idle penalty** whenever the HVT is unobserved, so loitering accrues
-  unbounded negative reward and "never acquire" is strictly worse than trying.
-
-Primary metric becomes **fraction of steps mission-capable** rather than survival
-time — richer signal, and it cannot be gamed by refusing to start.
-
-### Curriculum
-
-**Curriculum varies *within* one training run. Fidelity varies *between* runs.**
-They are orthogonal and must not be confused:
-
-| | Curriculum | Fidelity (RQ1) |
-|---|---|---|
-| Set when | changes during training, via callback | fixed at env construction |
-| Changes within a run | **yes** | **never** |
-| Differs between runs | no — identical schedule everywhere | **yes, that is the point** |
-| Purpose | make learning possible | the variable being measured |
-
-Every run uses one fidelity level from first step to last, and every run walks
-the same curriculum stages. Four students, four different textbooks, each taught
-easy chapters first — then all four sit the same exam.
-
-> ⛔ **Never use channel fidelity as a curriculum axis.** It is RQ1's independent
-> variable; training up through fidelity levels would confound the primary result
-> beyond repair. Same reasoning forbids ramping building density.
-
-> ⚠️ **The jammer appears in both, and that is fine — but only if the schedule is
-> identical everywhere.** Run the same jammer ramp in every condition and let the
-> fidelity level decide whether it does anything. In an F0/F1/F2 run the ramp
-> still executes and simply has no effect, because there is no SINR to degrade.
-> Same parameters, same step counts, nothing to confound.
-
-Budget real time for this. It is where projects of this shape stall, and the cue
-is only one axis of four.
-
-| Stage | HVT speed | Jammer | Battery | Episode length | Cue | What it teaches |
-|---|---|---|---|---|---|---|
-| 1 | **stationary** | off | 3× | 150 steps | exact | fly out, form a chain, hold station |
-| 2 | residential (8 m/s) | off | 2× | 300 steps | exact | follow a moving target, keep the chain |
-| 3 | full road speed | **on** | 1.5× | 450 steps | σ=150 m | degraded links near the target |
-| 4 | full | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, observer handoff |
-
-Reasoning per axis:
-
-- **HVT speed first, and it matters most.** A stationary target decouples "learn
-  to relay" from "learn to chase". Those are two hard problems; learning them
-  simultaneously from scratch is the likeliest failure mode.
-- **Episode length** is nearly free here, because difficulty is *monotone in
-  time* — a short episode is literally the easy 1-hop opening. Extending it is a
-  curriculum with no extra machinery.
-- **Battery** must start generous. An early policy flies inefficiently and would
-  drain and die before learning anything. Initial charge is randomised in
-  `[0.3, 1.0]` at stage 4 — a swarm mid-sortie has heterogeneous charge — which
-  gives `Var(B)` something to act on from step 1.
-- **Jammer off first**, since it degrades exactly the first hop, which is the
-  hardest link to close.
-
-Two rules that protect the results:
-
-1. **Fixed schedule by step count in the reported runs**, not adaptive
-   advancement. Adaptive advancement would let the easier fidelity levels
-   progress faster and hand them more experience at the final stage, confounding
-   RQ1. Use adaptive advancement during development to *find* the schedule, then
-   freeze it and use the same one everywhere.
-2. **Mix in earlier stages** (~20 % of episodes) rather than hard-switching, or
-   the policy forgets the opening phase it still has to execute every episode.
-
-Optional stretch, only once tracking already works: **stage 5 with no cue at
-all** — genuine search. Legitimate as an endpoint; fatal as a starting point,
-because that is where it eats the learning signal.
-
----
-
-## Observations
-
-**Rule: the actor may only see what a real drone could sense or receive.** Global
-state belongs to the critic. Violating this quietly turns decentralized execution
-into centralized execution and invalidates the whole CTDE framing.
-
-### Actor — ego features (21)
-| Feature | Dims | Realizable from |
-|---|---|---|
-| own velocity | 3 | INS |
-| own altitude | 1 | absolute — LoS geometry depends on it |
-| battery | 1 | |
-| sees HVT (soft flag) | 1 | own sensor |
-| relative vector to HVT | 3 | own sensor; zeroed when not seen |
-| **relative velocity of HVT** | 3 | own sensor — without this the drone cannot anticipate |
-| relative vector to MCV | 3 | MCV position is fixed and briefed |
-| measured noise floor | 1 | **how the drone senses the jammer** |
-| clearance margin to HVT | 1 | signed metres the ray clears the roofline |
-| clearance margin to MCV | 1 | ditto |
-| on active relay path | 1 | routing layer |
-| current e2e capacity | 1 | reported back down the chain |
-| steps since link last OK | 1 | proximity to episode failure |
-
-### Actor — per-neighbour features (9 × N−1)
-Relative position (3), relative velocity (3), their battery (1), whether they see
-the HVT (1), whether they are on the path (1). All standard MANET position
-reporting.
-
-### Edge features (2)
-Link capacity `C_ij` and the ray's clearance margin. **This is the only input the
-GNN has and DeepSets does not** — it is precisely the rung RQ2 tests.
-
-### How many neighbours — all of them, softly gated
-`N−1 ≤ 7`. The graph is **fully connected in the tensor**, with influence scaled
-by `E_ij = sigmoid((C_ij − 5.0)·γ)`. A neighbour behind a tower gets weight ≈0 and
-its message is suppressed.
-
-Not top-K, not a hard link-quality cutoff: a hard cutoff creates a gradient cliff
-when a neighbour flickers across the threshold, and changes tensor shape per
-timestep, which wrecks batching. Soft weights give the same effect with a smooth
-gradient and a fixed shape.
-
-### Terrain — clearance margins first, raster only if needed
-Nothing above tells the drone a tower is *in the way* before a link degrades, so
-it can react but never anticipate.
-
-**Clearance margins (already listed) are the cheap half.** Signed metres by which
-a ray clears the roofline — negative is blocked, positive is clear with margin.
-Free from the slab-intersection code, and smooth where a boolean is a cliff.
-
-**Local height raster is the optional half.** 24×24 cells at 20 m (a 480 m box),
-into a 2–3 layer CNN → 64-dim embedding. Two things make this work:
-
-- **Encode height relative to own altitude**, clipped: a cell reading `+100`
-  means "something 100 m above me — I cannot see through it". This makes the
-  representation **altitude-invariant**, which is a strong inductive bias and
-  should help cross-city transfer by preventing the network from memorising
-  Frankfurt's absolute heights.
-- **Precompute one global grid** (1500 m / 20 m = 75×75) offline in
-  `prep_osm.py`; at runtime each drone's patch is a batched **crop/gather**. No
-  per-drone rasterization, no shapely, stays on GPU.
-
-**Build order: margins first, raster only if the policy is visibly blind.** This
-defers real work and yields a free ablation — *does spatial awareness of buildings
-help, or do local sightline measurements suffice?*
-
-### Critic — centralized, training-only
-Sees global state: all drone states, HVT position and velocity, the full link
-matrix. Two consequences:
-
-- It **does not need to be size-agnostic**. Zero-shot transfer to `N ∈ {3,8}` runs
-  the actor alone; the critic is discarded at evaluation. A plain MLP over
-  concatenated global state is fine.
-- Keep the critic **identical across all three architecture conditions**. If only
-  the actor varies, RQ2 isolates the actor. If both vary, it is confounded.
-
----
-
-## Model architectures
-
-> Layer choice is now settled (custom MPNN — see below). Widths and depths remain
-> hyperparameters for the equal-budget search, not findings.
-
-### The ladder isolates one factor per rung
-| | Neighbours read as | Permutation-invariant | Size-agnostic | Uses link quality |
-|---|---|---|---|---|
-| Flat MLP | concatenated vector, max-N padded + masked | ✗ | ✗ | ✗ |
-| DeepSets | `ρ(Σᵢ φ(xᵢ))` — shared embed, then pool | ✓ | ✓ | ✗ |
-| GNN | same, messages weighted by `edge_weight` | ✓ | ✓ | ✓ |
-
-MLP → DeepSets isolates permutation invariance. DeepSets → GNN isolates the
-*relational* part, which is RQ2's actual claim. Comparing a GNN only against a
-flat MLP conflates the two and is the weaker experiment.
-
-The MLP needs **max-N padding plus masking** or it cannot be evaluated off-N at
-all, which would rig the transfer comparison toward the GNN.
-
-### Layer choice — the edge features are the whole point
-RQ2's GNN rung exists **only** to test whether link quality should modulate who a
-drone listens to. If the layer cannot ingest edge features, the GNN rung silently
-becomes the DeepSets rung and RQ2 measures nothing.
-
-| PyG layer | Edge features | Verdict |
-|---|---|---|
-| `SAGEConv` (GraphSAGE) | **none** | ☠️ **Never use here.** Collapses GNN into DeepSets. This is the default people reach for. |
-| `GCNConv` | scalar weight, degree-normalised | Poor fit — the normalisation assumes a different graph structure |
-| `GATv2Conv` | ✓ via `edge_dim` — enters the attention weights | Good fit |
-| `NNConv` | ✓ — edge features generate the message weight matrix | Expressive but the hypernetwork emits 256×256 values. Expensive. |
-| `GINEConv` | ✓ additive only (`x_j + e_ij`) | Cheap, blunt |
-| `TransformerConv` | ✓ | Heavier than this graph needs |
-
-**Decision: a custom layer on PyG's `MessagePassing` base**, with
-`message(x_i, x_j, e_ij) = MLP([x_i, x_j, e_ij])`.
-
-This is *not* inventing an architecture — it is the standard MPNN formulation of
-Gilmer et al. (2017), ~20 lines on top of PyG, and fully citable. It is preferred
-here because **it makes the ablation exact**: the DeepSets rung is the identical
-layer with `e_ij` zeroed. Same code path, same parameter count, same optimiser,
-one input masked. No confound is possible. Two differently-named layers would
-always invite "maybe GATv2 is just a better layer."
-
-Fallback if an off-the-shelf named layer is preferred: **`GATv2Conv` with
-`edge_dim=2`**. Attention fits conceptually — "how much should I listen to this
-neighbour" is exactly what link capacity says — and GATv2 (Brody et al., 2022)
-fixed the static-attention flaw in the original GAT, so it is the right citation.
-
-### Rules that keep the comparison honest
-1. **Do not invent an architecture.** Either the MPNN formulation above or a
-   citable PyG layer. Designing a novel GNN is a different thesis.
-2. **Equal hyperparameter budget** across all three, and say so in the
-   methodology. Tuning the GNN harder than the baselines is the single most
-   likely way this result gets dismissed.
-3. **Match parameter counts** to within ~20 %, so the comparison is not
-   capacity-vs-capacity.
-4. **Sanity floor:** any architecture must beat a random policy and at least
-   match the B0 scripted heuristic. Failing that is a bug, not a finding.
-
-### Depth follows graph diameter — and "layer" means two different things
-Do not confuse these:
-
-- **Message-passing layers** = how far information travels across the graph. One
-  layer reaches direct neighbours; two reaches neighbours-of-neighbours. Nothing
-  to do with capacity.
-- **MLP hidden layers** = ordinary network depth, inside each message-passing
-  layer and in the heads. This is where capacity lives.
-
-The graph is softly fully connected at `N ≤ 8`, so its diameter is **1**: after
-one message-passing layer every drone has already heard every other. A second
-layer buys two-hop relational structure. A third propagates nothing new and
-causes **over-smoothing**, where all node representations converge — a documented
-GNN failure mode, not a rule of thumb.
-
-So **2 message-passing layers** is the ceiling the graph justifies, while width
-stays normal. A reasonable build:
-
-| Component | Shape | Params |
-|---|---|---|
-| Ego encoder | 21 → 256 → 256 | ~70k |
-| Message function φ (×2 layers) | (256+256+2) → 256 → 256 | ~400k |
-| Policy head | 256 → 256 → 6 | ~67k |
-| **Total actor** | | **~550k** |
-
-Width is a hyperparameter and belongs in the equal-budget search; 256 is the
-starting point, not a finding.
-
-### Expect a null on the in-distribution rung
-At `N=5` the graph is tiny and GNN ≈ DeepSets is a plausible outcome. The
-interesting result lives in the **off-N and cross-city transfer** columns. A
-clean null, reported as such, is still a contribution.
-
----
-
-## Device / performance rules
-
-Training tensors live on `cuda:0`. **Never call `.cpu()`, `.numpy()`, or
-`.item()` inside the env `step()` or the training hot loop** — `.item()` forces a
-GPU sync and is the easy one to miss.
-
-Local dev is Apple Silicon (CPU/MPS), toy configs only (2–3 agents, tiny building
-set), for correctness debugging. Real training runs on a rented CUDA GPU (RunPod).
-Guard device selection; never silently degrade a real training run to CPU.
-
-**Two verified consequences that shape the architecture:**
-
-1. **skrl's `PettingZooWrapper` round-trips every action and observation through
-   NumPy on each step** (`untensorize_space` / `tensorize_space`) and exposes
-   `num_envs == 1`; its vectorized paths are Isaac Lab-only. So: the env core is
-   **batched with a leading `num_envs` dimension**, a thin PettingZoo adapter sits
-   on top for API-compliance tests and single-env visual debugging only, and
-   training uses a **custom skrl multi-agent wrapper** written against the batched
-   core.
-
-2. **osmnx / shapely are CPU-and-NumPy-only.** They are used **offline** in
-   `scripts/prep_osm.py` to bake buildings into a tensor of boxes. Runtime
-   occlusion is vectorized segment-vs-box intersection (slab method) in pure
-   torch. Buildings are 2.5D — check the segment's altitude across the 2D
-   intersection interval, not just a planar crossing.
-
-**Throughput target: ≥1000 env-steps/s batched on GPU.** This is a gate, not an
-aspiration — measure it before building anything on top of the env.
-
----
-
-## Structure & conventions
-- `src/env/` — batched env, occlusion geometry, channel model, routing, energy
-- `src/models/` — GNN / DeepSets / MLP actor-critic (PyG)
-- `src/training/` — skrl wrappers, training entrypoints
-- `configs/` — YAML per experiment condition
-- `scripts/` — one-off data prep (OSM ingestion/caching)
-- `tests/` — **cross-module/integration only**. Unit tests are co-located: the
-  test for `src/env/occlusion.py` is `src/env/test_occlusion.py`.
-- Naming: `hvt`, `mcv_base`, `tracker`, `relay`, `sinr_db`, `capacity_mbps`,
-  `edge_weight`, `ptx_dbm` — keep tactical/telecom terms consistent.
-- Observations: 21-dim ego, 9-dim per neighbour, 2-dim per edge — full breakdown
-  in the "Observations" section above. Keep the actor **agent-local**; global
-  state belongs to the critic, not the actor.
+- Unit tests sit next to their module: `src/env/test_channel.py`.
+- Naming: `hvt`, `mcv_base`, `sinr_db`, `capacity_mbps`, `edge_weight`,
+  `ptx_dbm`. Keep tactical/telecom terms consistent.
+- Observations: 21-dim ego, 9-dim per neighbour, 2-dim per edge. Actor stays
+  **agent-local**; global state belongs to the critic.
 
 ## Build / test
 ```bash
-uv sync                                          # uv.lock is authoritative
-uv run pytest                                    # tests
-uv run ruff check . && uv run ruff format .      # lint / format
+uv sync
+uv run pytest                                    # 103 tests
+uv run ruff check . && uv run ruff format .
 ```
-
-## Boundaries
-- **No new heavy dependencies** (sim engines, RL frameworks) without flagging
-  first — the stack was chosen deliberately for the timeline.
-- **Do not change path-loss / SINR / capacity formulas** without checking against
-  the cited standard and updating the hand-computed tests. These are cited in the
-  methodology chapter.
-- **Multi-seed runs (≥5 seeds per condition) for anything reported as a finding.**
-  Report median + IQR, not mean ± std — RL returns are not normally distributed.
-  Never report single-run numbers.
-- **Freeze the environment at the end of March 2027.** Results before the freeze
-  are pilots; results after are thesis material. Do not mix them.
-- **Do not sweep six reward weights.** Fix α, β, ω, γ and the threshold from
-  physical reasoning and document the choice; sweep `λ` only.

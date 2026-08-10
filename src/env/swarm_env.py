@@ -10,7 +10,7 @@ installed stack: skrl's `PettingZooWrapper` round-trips every action and
 observation through NumPy on each step (`untensorize_space` /
 `tensorize_space`) and exposes `num_envs == 1`, which contradicts the project's
 stay-in-VRAM rule and caps throughput at single-env Python speed. See
-AGENTS.md "Device / performance rules" and docs/THESIS_PLAN.md section 6.
+AGENTS.md "Hard rules" and docs/DECISIONS.md.
 
 Purely numeric/tensor state — no rendering happens here. See render.py for
 the separate matplotlib top-down visualizer used for eval videos / figures.
@@ -26,7 +26,7 @@ from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
 # Ego observation. Agent-local only -- global state belongs to the critic.
-# Breakdown (see AGENTS.md "Observations"):
+# Breakdown (see docs/ENVIRONMENT.md "Observations"):
 #   3  own velocity          3  relative vector to HVT
 #   1  own altitude          3  relative velocity of HVT
 #   1  battery               3  relative vector to MCV
@@ -144,7 +144,7 @@ class SwarmRelayEnv(ParallelEnv):
         # zero, battery 1.0. The chain forms during transit -- that is part of
         # the mission, not a preamble to it.
         # TODO: set self._hvt_cue once = true position + N(0, CUE_SIGMA_M).
-        # Never refresh it. See AGENTS.md "Episode structure" for why.
+        # Never refresh it. See docs/ENVIRONMENT.md for why.
 
         observations = {a: self._build_observation(i) for i, a in enumerate(self.agents)}
         infos = {a: {} for a in self.agents}
@@ -161,7 +161,7 @@ class SwarmRelayEnv(ParallelEnv):
         #    pre-baked building tensor. NOT shapely — that is offline-only,
         #    see scripts/prep_osm.py. Also gates the sensor: observation needs
         #    an unoccluded ray, which is an ANGLE constraint (clear the
-        #    roofline), not a radius — see AGENTS.md.
+        #    roofline), not a radius — see docs/PHYSICS.md.
         # 5. Per-link path loss by class (A2A: FSPL + blockage; A2G: TR 36.777
         #    UMi-AV) -> channel.received_power_dbm -> channel.sinr_db. Pass a
         #    tx_mask holding only the transmitters active in the evaluated
@@ -173,11 +173,11 @@ class SwarmRelayEnv(ParallelEnv):
         #    F3 +jammer / F4 +multi-hop division. It is a CONSTRUCTION-TIME
         #    config flag and must never change within a run -- unlike the
         #    curriculum, which varies within every run on an identical
-        #    schedule across all conditions. See AGENTS.md "Curriculum".
+        #    schedule across all conditions. See docs/ENVIRONMENT.md "Curriculum".
         # 7. is_link_alive = routing.link_alive(C_e2e, CAPACITY_THRESHOLD_MBPS)
         # 8. Continuous GNN edge weights: sigmoid((capacity - 5.0) * gamma)
         #    (used by the model, not the env — env just exposes capacities)
-        # 9. Reward -- see AGENTS.md "Reward" for the full derivation:
+        # 9. Reward -- see docs/REWARD.md for the full derivation:
         #      w_mission * [observed AND C_e2e >= threshold]   <- IS the metric
         #      + gamma*Phi(s') - Phi(s)                        <- PBRS, see below
         #      - w_idle * [not observed]                       <- kills the lazy
