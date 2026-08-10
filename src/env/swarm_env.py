@@ -177,10 +177,18 @@ class SwarmRelayEnv(ParallelEnv):
         # 7. is_link_alive = routing.link_alive(C_e2e, CAPACITY_THRESHOLD_MBPS)
         # 8. Continuous GNN edge weights: sigmoid((capacity - 5.0) * gamma)
         #    (used by the model, not the env — env just exposes capacities)
-        # 9. Reward: tracking quality + capacity term - energy penalty
-        #    - lambda * Var(battery across agents)
-        #    - IDLE PENALTY per step with no HVT observation. Without it,
-        #    loitering is free and "never acquire, never fail" is optimal.
+        # 9. Reward -- see AGENTS.md "Reward" for the full derivation:
+        #      w_mission * [observed AND C_e2e >= threshold]   <- IS the metric
+        #      + gamma*Phi(s') - Phi(s)                        <- PBRS, see below
+        #      - w_idle * [not observed]                       <- kills the lazy
+        #        optimum, which survives fixed-length episodes because never
+        #        acquiring also means never flying out, i.e. saving energy
+        #      - w_energy * power   - lambda * Var(battery)   - w_effort * |a|^2
+        #    Phi = k*(w_a*Phi_approach + w_o*Phi_observe + w_l*Phi_link), all
+        #    TEAM quantities (nearest drone / best clearance / e2e capacity) --
+        #    per-drone potentials pull all five onto the HVT and nobody relays.
+        #    SUM not product: a product is flat at t=0 when both are ~0.
+        #    Phi must be 0 at genuine terminal states or the invariance breaks.
         # 10. Termination: battery == 0 ONLY. Mission failure is a per-step
         #     condition recorded in `infos`, never terminal -- see the
         #     EPISODE_STEPS comment above for why. Truncate at EPISODE_STEPS.

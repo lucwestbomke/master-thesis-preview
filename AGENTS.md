@@ -192,17 +192,142 @@ such.
 completeness — including `P_circuit`, the always-on radio front end at ~2–5 W —
 but flight energy is what the policy actually controls.
 
-### Graph and reward
+### Graph
 - GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):
   `E_ij = sigmoid((C_ij − 5.0) · gamma)`
-- Reward: tracking quality + capacity − energy − `λ·Var(B_1..B_N)`
-  **− idle penalty per step with no HVT observation** (see below). The variance
-  term forces role **rotation** rather than a fixed division of labour. Watch for
-  its degenerate optimum (all drones hover ⇒ variance 0) — the tracking and
-  capacity terms must dominate.
 - Jammer is mounted on the HVT and moves with it.
-- HVT route: randomized valid path over the real OSM road graph, resampled per
-  episode. Speed ~10 m/s. Fixed routes only for early debugging.
+
+---
+
+## Reward
+
+**This is the highest-leverage decision in the project.** Every other
+hyperparameter affects how fast you learn; the reward defines *what* is optimal.
+Get it wrong and the agent converges beautifully to the wrong behaviour.
+
+### Structure
+```
+r =  w_mission · [observed AND C_e2e ≥ 5 Mbps]     # team — IS the headline metric
+   + γ·Φ(s′) − Φ(s)                                 # potential-based shaping
+   − w_idle    · [HVT not observed]                 # team
+   − w_energy  · normalised power draw              # individual
+   − λ         · Var(B_1..B_N)                      # team
+   − w_effort  · ‖a‖²                               # individual, small
+```
+
+### The primary term is the metric, deliberately
+`fraction of steps mission-capable` is both the dominant reward term and the
+headline metric. Keeping them identical means the policy optimises exactly the
+number that gets reported — no gap to explain later.
+
+### Potential-based shaping — the only safe way to add guidance
+Adding `F = γ·Φ(s′) − Φ(s)` for **any** `Φ` provably leaves the optimal policy
+unchanged (Ng, Harada & Russell 1999): summed over a trajectory the terms
+telescope to `γ^T Φ(s_T) − Φ(s_0)`, which depends only on the endpoints and so
+adds the same constant to every policy's return.
+
+> A naive "bonus for being close to the HVT" is a **salary** — 400 steps of
+> loitering pays 15× what 20 steps pays, and it keeps growing whether or not the
+> mission is ever accomplished. PBRS is a **one-time payment** for real progress;
+> round trips cancel exactly, so there is nothing to farm.
+
+Two rules:
+1. **`Φ = 0` at genuine terminal states** (battery death), or `γ^T Φ(s_T)`
+   survives the telescoping and reintroduces a policy-dependent bias. Truncation
+   at 600 steps is fine provided the value is bootstrapped there.
+2. **The scale of `Φ` is free.** Because it cannot move the optimum, it is the
+   one quantity in the reward tunable purely for learning speed with zero
+   methodological consequence. Every other weight changes the objective.
+
+### The potential
+```
+Φ(s) = k · [ w_a·Φ_approach + w_o·Φ_observe + w_l·Φ_link ]      k ≈ 10
+```
+| Component | Form | Job |
+|---|---|---|
+| `Φ_approach` | `1 − min(d_min, D_ref)/D_ref`, `d_min` = nearest drone→HVT, `D_ref` ≈ map diagonal | coarse; non-zero anywhere on the map so the agent is never blind |
+| `Φ_observe` | `sigmoid(clearance_best / τ_c)`, `τ_c ≈ 15 m` | fine; rewards correct *geometry*, not mere proximity |
+| `Φ_link` | `sigmoid((C_e2e − 5.0) / τ_l)`, `τ_l ≈ 2 Mbps` | gradient below threshold, where the binary indicator has none |
+
+Each lands in `[0,1]`. Suggested `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
+the link, which is the hardest and last-learned stage.
+
+**The handover is the design.** Far out only `Φ_approach` moves; once a drone is
+close it saturates and `Φ_observe` takes over; once observing, only `Φ_link`
+still improves. Three mission stages, each with a live gradient, no dead zones.
+
+Three traps this avoids:
+- **Distance to the HVT is the wrong measure.** The observation envelope is a
+  wedge down the street plus an overhead cone, not a disc — a drone 20 m away
+  across the street sees nothing while one 300 m down the street sees fine.
+  Hence `clearance`, not range.
+- **Per-drone potentials cause clustering.** All five drones get pulled onto the
+  HVT and nobody relays. `d_min` and `clearance_best` are **team** quantities, so
+  once one drone has the target the pull stops for everyone else.
+- **A product form deadlocks at t=0.** `Φ_observe × Φ_link` is flat at episode
+  start, when both are ≈0 and neither can improve without the other. **Sum.**
+
+> ⚠️ `τ_c` and `τ_l` are starting values reasoned from geometry (22 m buildings,
+> 8 m of travel per step) and from the threshold (40 % of 5 Mbps). **Re-tune them
+> against the real env once Block D runs** — safely, since they live in the
+> potential.
+
+### Setting the remaining weights — by behavioural ordering, not sweeping
+Write down pairs of behaviours you know how to rank, and require the reward to
+rank them correctly. Each pair gives an inequality; the inequalities pin the
+weights. Compute the energy quantities from the rotary-wing model.
+
+| Required ordering | Constraint |
+|---|---|
+| trying and failing > never trying | `w_idle > w_energy · (cost of flying − cost of hovering)` |
+| holding the mission > hovering efficiently | `w_mission > w_energy · (cost of maintaining the chain)` |
+| meeting the threshold ≈ exceeding it | capacity term must **saturate** — no reward past ~1.5× |
+| mission success > perfect battery balance | `w_mission > λ · Var_max` |
+
+**Only `λ` is swept**, because the right amount of role rotation is not derivable
+from physics — quantifying it *is* RQ3. That is a far better justification than
+"we did not know."
+
+> The lazy optimum survives fixed-length episodes: never acquiring means never
+> flying out, which *saves energy*. Zero mission reward at low cost beats zero
+> mission reward at high cost. `w_idle` exists to break exactly that, and the
+> first constraint above sizes it.
+
+### Known degenerate optima — check for these explicitly
+- **Free-riding.** Mission reward is shared, energy cost is individual, so the
+  selfish optimum is to let the others work. `λ·Var(B)` is the counter-mechanism,
+  not merely a rotation device.
+- **Variance term's own optimum.** All drones hovering ⇒ `Var(B)=0` ⇒ zero
+  penalty. Doing nothing scores perfectly on that term and must be dominated.
+- **Capacity over-optimisation.** Reward capacity linearly and the swarm clusters
+  for 74 Mbps when 5 is required, abandoning coverage. Saturate.
+- **Observation clustering.** Reward per-drone sighting and nobody relays. Reward
+  the *mission*, not the sighting.
+
+### Discount factor is part of the reward design
+Effective horizon is `1/(1−γ)`. The episode is 600 steps and **difficulty is
+concentrated at the end** — the 3-hop regime only appears after t≈120 s. At the
+PPO default `γ=0.99` the horizon is 100 steps, so the agent is structurally blind
+to the hard part and would optimise the easy opening. Use **`γ ≈ 0.997–0.999`**.
+
+### Validate the reward before training anything
+Score hand-written policies under the reward and assert the ranking:
+`B0 heuristic > fixed formation > all-drones-chase > never leaves the MCV`.
+If that ordering fails, the reward is wrong — found in minutes rather than after
+a three-hour run. Treat this as a test file; the reward is a specification
+artefact like the channel model.
+
+Log **every term separately** in W&B. The total is nearly useless for diagnosis;
+one term contributing 95 % of the magnitude is the signature of a scaling error
+and is invisible in the aggregate.
+
+### Constraints that protect the experiments
+- The reward function must be **byte-identical across F0–F4**. Only the physics
+  feeding it changes. Consequence to expect rather than discover: under F0
+  capacity is binary, so `Φ_link` is degenerate and carries no gradient — that is
+  part of what "training under a simplified channel" *means*, not a bug.
+- The reward must **not depend on agent index**, or homogeneity breaks and the
+  "roles emerge rather than being assigned" claim collapses.
 
 ### Episode structure — launch, cue, route
 
