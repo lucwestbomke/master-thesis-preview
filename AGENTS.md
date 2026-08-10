@@ -13,14 +13,19 @@ timeline) lives in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md). **Read it befor
 making design decisions.** Short version:
 
 - **RQ1 (primary):** which physical effects must a channel model include for
-  learned policies to transfer? Train at fidelity **F0** (connectivity radius,
-  `R` calibrated to F3's median link range) → **F1** (+occlusion) → **F2**
-  (+jammer) → **F3** (full SINR/rate/multi-hop division); evaluate *all* under
-  F3. Hypothesis: the gap is dominated by **occlusion**.
+  learned policies to transfer? Train one policy at each fidelity rung — **F0**
+  connectivity radius (`R` calibrated to F4's median link range) → **F1**
+  +occlusion → **F2** +SINR/Shannon rate → **F3** +jammer → **F4** +multi-hop
+  rate division — and evaluate *all of them* under F4. Each rung adds exactly
+  one physical effect so the gaps attribute the answer. Hypothesis: the gap is
+  dominated by **occlusion**.
 - **RQ2:** MLP → DeepSets → GNN ladder; zero-shot transfer across `N ∈ {3,5,8}`
   **and** across city morphology.
-- **RQ3:** does observer/relay role rotation emerge? Two drivers ablated
-  separately: `-λ·Var(B)` and jammer exposure.
+- **RQ3:** does the observer role **hand off** as sightlines change, and is the
+  handoff coordinated and *anticipatory*? Ablate the neighbours' `sees_hvt`
+  observation; separately ablate `λ`. Geometric handoff replaced energy-driven
+  rotation because a realistic airframe depletes only 8–17 % of battery per
+  240 s episode, so `Var(B)` had nothing to act on.
 
 > **Action space is motion only (3-dim).** Transmit power is fixed at 30 dBm.
 > Three independent justifications for adaptive Ptx — energy, interference,
@@ -56,8 +61,9 @@ making design decisions.** Short version:
 
 ## Physics / math — implemented and unit-tested
 
-Implemented in [`src/env/channel.py`](src/env/channel.py) and
-[`src/env/routing.py`](src/env/routing.py), with hand-computed assertions in the
+Implemented in [`src/env/channel.py`](src/env/channel.py),
+[`src/env/routing.py`](src/env/routing.py) and
+[`src/env/energy.py`](src/env/energy.py), with hand-computed assertions in the
 co-located test files. **Do not change these formulas without updating the tests
 and checking against the cited standard** — they appear in the methodology
 chapter and must stay traceable.
@@ -175,22 +181,49 @@ Frankfurt), not a range:
 So the envelope is a wedge down the street plus an overhead cone — **not a
 36 m disc**. Compute it from real footprints, never from a radius.
 
-### Energy
+### Energy — implemented in [`src/env/energy.py`](src/env/energy.py)
 ```
-P_total = P_flight(‖v‖) + κ·‖a‖² + P_tx_DC
-P_tx_DC = 10^(Ptx_dBm/10)/1000 / η_PA + P_circuit          # η_PA ≈ 0.25
+P(V) = P_0·(1 + 3V²/U_tip²)                              # blade profile  ↑ with V
+     + P_i·(√(1 + V⁴/4v_0⁴) − V²/2v_0²)^½                # induced        ↓ with V
+     + ½·d_0·ρ·s·A·V³                                    # parasite       ↑ with V
+P_total = P(‖v‖)/η_drivetrain + κ·‖a‖² + P_tx_DC
 ```
-`P_flight` is the **rotary-wing model of Zeng, Xu & Zhang (2019)**, U-shaped with
-a minimum near 10–15 m/s. The earlier `α‖v‖²` form claimed hovering is cheapest,
-which is false for rotary-wing UAVs — and energy drives the role-rotation result
-in RQ3, so it cannot rest on a model that rewards hovering when reality does not.
-`κ‖a‖²` is an explicit **control-effort heuristic**, not physics; present it as
-such.
+Standard rotorcraft aerodynamics, as presented in **Zeng, Xu & Zhang (2019)**.
+Induced power *falls* with forward speed faster than profile power rises, so the
+curve is **U-shaped** — for the default airframe the minimum sits at **13.3 m/s
+and costs 58 % less than hovering**.
 
-`P_tx_DC` is a **constant** (Ptx is fixed at 30 dBm), so it shifts the budget by
-~1.6 % and does not vary with the action. Keep it in the accounting for
-completeness — including `P_circuit`, the always-on radio front end at ~2–5 W —
-but flight energy is what the policy actually controls.
+> The earlier `P_hover + α‖v‖²` form asserted the opposite, that hovering is
+> cheapest. Energy sets the cost of the observer role, so that error would have
+> inverted the behaviour the reward is meant to produce. A regression test pins
+> it.
+
+**Constants are derived, not quoted.** Momentum theory gives the dominant hover
+term from mass and rotor geometry alone (`v_0 = √(W/2ρA)`), which is checkable in
+a way a copied table is not — and it yields a validation a paper's example
+constants cannot: **predicted endurance against published flight time.** The
+default ~5.9 kg / 21-inch airframe predicts **56.8 min** of hover on 548 Wh
+against ~55 min published.
+
+Two details that matter numerically:
+- Battery drain is **electrical**, not shaft — divide by drivetrain efficiency
+  (~0.80). Omitting it overstates endurance by ~25 %.
+- The induced bracket is evaluated as `1/(√(1+x²)+x)`, algebraically identical to
+  `√(1+x²)−x` but without the catastrophic cancellation.
+
+`κ‖a‖²` is an explicit **control-effort heuristic**, not physics; it defaults to
+zero and must be opted into. `P_tx_DC` is a **constant** (Ptx is fixed), ~7 W or
+1.6 % of draw — kept for completeness, but flight energy is what the policy
+controls.
+
+> ⚠️ **Battery does not bind in one episode.** 240 s of hovering burns ~7 % of a
+> 548 Wh pack. This measurement is what reframed RQ3 from energy-driven rotation
+> to geometric handoff, and why initial charge is randomised in `[0.3, 1.0]`.
+> A test asserts it stays under 25 %; if that ever fails, revisit RQ3.
+
+> ⚠️ `tip_speed_ms`, `solidity`, `profile_drag_coeff`, `fuselage_drag_ratio` are
+> `TODO(verify)` — not usually published per airframe, so they use documented
+> typical ranges. Same standing as the TR 36.777 coefficients.
 
 ### Graph
 - GNN edge weight (continuous, no hard cutoff — avoids gradient cliffs):
@@ -284,9 +317,8 @@ weights. Compute the energy quantities from the rotary-wing model.
 | meeting the threshold ≈ exceeding it | capacity term must **saturate** — no reward past ~1.5× |
 | mission success > perfect battery balance | `w_mission > λ · Var_max` |
 
-**Only `λ` is swept**, because the right amount of role rotation is not derivable
-from physics — quantifying it *is* RQ3. That is a far better justification than
-"we did not know."
+**Only `λ` is swept**, because the right amount of load-balancing pressure is not
+derivable from physics. That is a far better justification than "we did not know."
 
 > The lazy optimum survives fixed-length episodes: never acquiring means never
 > flying out, which *saves energy*. Zero mission reward at low cost beats zero
@@ -456,7 +488,7 @@ is only one axis of four.
 | 1 | **stationary** | off | 3× | 150 steps | exact | fly out, form a chain, hold station |
 | 2 | residential (8 m/s) | off | 2× | 300 steps | exact | follow a moving target, keep the chain |
 | 3 | full road speed | **on** | 1.5× | 450 steps | σ=150 m | degraded links near the target |
-| 4 | full | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, role rotation |
+| 4 | full | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, observer handoff |
 
 Reasoning per axis:
 
@@ -467,8 +499,9 @@ Reasoning per axis:
   time* — a short episode is literally the easy 1-hop opening. Extending it is a
   curriculum with no extra machinery.
 - **Battery** must start generous. An early policy flies inefficiently and would
-  drain and die before learning anything. But it must *bind* at stage 4, or RQ3
-  has no mechanism to study.
+  drain and die before learning anything. Initial charge is randomised in
+  `[0.3, 1.0]` at stage 4 — a swarm mid-sortie has heterogeneous charge — which
+  gives `Var(B)` something to act on from step 1.
 - **Jammer off first**, since it degrades exactly the first hop, which is the
   hardest link to close.
 
@@ -692,7 +725,7 @@ aspiration — measure it before building anything on top of the env.
 ---
 
 ## Structure & conventions
-- `src/env/` — batched env, occlusion geometry, channel model, routing
+- `src/env/` — batched env, occlusion geometry, channel model, routing, energy
 - `src/models/` — GNN / DeepSets / MLP actor-critic (PyG)
 - `src/training/` — skrl wrappers, training entrypoints
 - `configs/` — YAML per experiment condition
