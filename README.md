@@ -12,6 +12,7 @@ realistic physics, and *which* physics is responsible?
 
 | | |
 |---|---|
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | **the red thread** — claim → experiment → block → chapter |
 | [`AGENTS.md`](AGENTS.md) | entry point — current state, hard rules, settled parameters |
 | [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md) | research design: questions, conditions, metrics, timeline |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | what was tried and rejected, with evidence |

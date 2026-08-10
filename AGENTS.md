@@ -37,7 +37,9 @@ Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze t
 environment end of March 2027** — results before are pilots, after are thesis
 material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 
-Block B is specified in [`docs/BLOCK_B.md`](docs/BLOCK_B.md).
+Block B is specified in [`docs/BLOCK_B.md`](docs/BLOCK_B.md). Why each block
+exists, what it gates and which thesis chapter it feeds:
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -45,7 +47,8 @@ Block B is specified in [`docs/BLOCK_B.md`](docs/BLOCK_B.md).
 
 | File | Read it when |
 |---|---|
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | **always, first** — every entry was proposed then killed on evidence |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | **start here** — the red thread: claim → experiment → block → chapter |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | **always, second** — every entry was proposed then killed on evidence |
 | [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md) | making a research decision: RQs, conditions, metrics, timeline |
 | [`docs/PHYSICS.md`](docs/PHYSICS.md) | touching channel / routing / energy / scenario parameters |
 | [`docs/REWARD.md`](docs/REWARD.md) | touching the reward or its weights |

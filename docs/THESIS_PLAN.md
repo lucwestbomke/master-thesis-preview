@@ -348,9 +348,12 @@ official five months are experiments and writing only.
 
 ### Phase 0 — Preparation (now → Feb 2027, part-time)
 
+Why each block exists, what it gates and which chapter it feeds:
+[`ROADMAP.md`](ROADMAP.md).
+
 | Block | Deliverable | Done when |
 |---|---|---|
-| A | Channel model, routing + energy, unit-tested | ✅ done — 79 tests, hand-computed |
+| A | Channel, routing, energy + reward, unit-tested | ✅ done — 103 tests, hand-computed |
 | B | OSM/LoD2 pipeline for Frankfurt | Buildings + road graph cached as tensors; height coverage verified |
 | C | Occlusion (batched torch slab method) | Matches a slow shapely reference on random geometry |
 | D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s on GPU** |
