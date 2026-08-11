@@ -85,8 +85,8 @@ spec written six months early goes stale. Only the current block has one.
 | Block | Delivers | Serves | Gate | Fails if |
 |---|---|---|---|---|
 | **A** ✅ | channel, routing, energy, reward — pure, batched, tested | all | 103 tests, hand-computed | — |
-| **B** ⬅️ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed | heights are missing → the map is useless and the scenario is unfounded |
-| **C** | batched segment-vs-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry | too slow → blows D's throughput gate |
+| **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
+| **C** ⬅️ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry | too slow → blows D's throughput gate. `M = 4220`, so a broad phase is mandatory |
 | **D** | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
 | **F** | F0–F4 as config flags on one env | **RQ1 directly** | all five run; `R` calibrated under F4 | uncalibrated `R` → RQ1 comparison is meaningless |
@@ -127,14 +127,19 @@ chapters shows what can be written *early*:
 
 ```
 A ████████████████████  done   physics, tested, frozen
-B ░░░░░░░░░░░░░░░░░░░░  next   docs/BLOCK_B.md
-C ░░░░░░░░░░░░░░░░░░░░
+B ████████████████████  done   geometry baked → data/frankfurt_box.npz
+C ░░░░░░░░░░░░░░░░░░░░  next   needs a spec first
 D ░░░░░░░░░░░░░░░░░░░░         ← the gate that decides the experiment matrix
 E ░░░░░░░░░░░░░░░░░░░░
 F ░░░░░░░░░░░░░░░░░░░░
 G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall
 H ░░░░░░░░░░░░░░░░░░░░
 ```
+
+**Chapter 3 is now writable.** `PHYSICS.md` was already most of its substance;
+Block B replaced its remaining assumptions with measurements (canyon ratio,
+sightline distribution, observation envelope) and produced the box figure. That
+is the single biggest scheduling win available before the March 2027 freeze.
 
 **Now → Feb 2027:** Phase 0. Build B–H. Write Chapters 2 and 3 in parallel.
 **End Mar 2027:** environment freeze. Pilots before, thesis material after.

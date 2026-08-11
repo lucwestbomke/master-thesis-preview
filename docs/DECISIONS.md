@@ -89,6 +89,46 @@ and exposes `num_envs == 1`; its vectorized paths are Isaac Lab-only. That
 contradicts the stay-in-VRAM rule and caps throughput at single-env Python speed.
 The adapter is kept for API-compliance tests and visual debugging only.
 
+### OSM `height` / `building:levels` as the height source
+Measured, not assumed (`scripts/check_height_coverage.py`, 1500 m box, three
+candidate centres). **Area-weighted coverage 57–59 %**; raw coverage 41–44 %.
+Only 3–5 % of footprints carry an explicit `height` tag — the rest of the
+coverage comes from `building:levels` and its 3.2 m/storey assumption.
+
+The 42 % of built area with no height at all is **not** sheds: it includes Die
+Welle, the Börse, the Bundesbank headquarters and Triton House — the 20–60 m
+mid-rise blocks that set the canyon ratio, which is half of why Frankfurt was
+chosen. Where OSM *does* have a tag it is often wrong: it puts the
+Deutsche-Bank-Hochhaus at 22 m (actual ~155 m) and the Main Tower at 170 m
+(actual ~200 m).
+
+**Superseded by Hessen LoD2** (below). OSM is still the source for the road
+graph — that is well mapped and heights are irrelevant to it.
+
+### One axis-aligned box (AABB) per building part
+The original Block B spec said axis-aligned boxes, splitting rotated or concave
+footprints as needed. Measured on the chosen Frankfurt box (4351 LoD2 parts):
+one AABB per part inflates built area **+134 %**, from 0.901 km² to 2.109 km²,
+filling **94 % of the box**. The city becomes effectively solid, every link is
+blocked, and occlusion no longer separates the fidelity rungs — RQ1 measures
+nothing.
+
+Cause: LoD2 parts are rectangles but **rotated**. Only 18 % are within 10° of
+axis-aligned; median long-axis orientation is 38°. An AABB around a 45°-rotated
+rectangle doubles its area (measured median ratio 1.90).
+
+**Replaced by oriented boxes (OBB):** median ratio **1.07**, +38 % total, 55 %
+fill. The slab method is unchanged — rotate the segment into the box frame
+first, with `cos θ`/`sin θ` baked in offline. `M` stays at 4351; matching OBB
+fidelity with AABBs would need tens of thousands of boxes.
+
+### Rotating the whole map to rescue AABBs
+The obvious follow-up once AABBs fail. Swept map rotations 0–74°: the best is
+**+96 % at 30°**, still far worse than OBB's +38 %, and the fill never drops
+below 78 %. Frankfurt has no single dominant street orientation — part
+orientations run 22–74° interquartile — so any global rotation that helps one
+district hurts another. Dead.
+
 ### `SAGEConv` for the GNN rung
 ☠️ **Never.** It cannot ingest edge features at all, so it would silently collapse
 the GNN rung into the DeepSets rung and leave RQ2 measuring nothing — and it is
@@ -102,6 +142,7 @@ the layer people reach for by default.
 |---|---|
 | `τ_c`, `τ_l` retuning | a running env (Block D) — safe to change, they live in the potential |
 | Local height raster | whether the policy is visibly blind without it (Block D/G) |
-| LoD2 vs OSM `building:levels` coverage for the Frankfurt box | Block B — **must be checked, not assumed** |
-| Second city for cross-morphology transfer | Block B; candidates London City (similar structure, different topology) or Barcelona (maximum contrast) |
+| Second city for cross-morphology transfer | candidates London City (similar structure, different topology) or Barcelona (maximum contrast). Note LoD2 is a *Hessen* service — a second city needs its own height source, and the coverage gate must be re-run |
+| `830 m` recognition / `2.8 km` detection range | **unverified — no derivation exists in this repo.** Measured to be non-binding (99.8 % of sightlines are shorter), so results are insensitive to it; if a defensible number is ever needed, derive it from a stated camera rather than assert it. Same standing as the `TODO(verify)` constants |
+| MCV spawn is confined to the box periphery | all 121 spawn points sit at r > 500 m from the box centre, and the quadrant split is uneven (SW 34 % vs NW 13 %). Geometrically forced by `MCV_MIN_REACH_M`, and mitigated by observations being MCV-*relative*. Revisit if RQ2 transfer looks like map memorisation |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |

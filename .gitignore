@@ -17,13 +17,19 @@ venv/
 
 # Experiment outputs
 wandb/
-outputs/            # hydra run dirs
+# hydra run dirs
+outputs/
 runs/
 checkpoints/
 *.pt
 *.ckpt
 videos/
 
-# Cached OSM assets (regenerate via scripts/prep_osm.py)
+# Cached OSM / LoD2 assets (regenerate via scripts/prep_osm.py and the
+# check_*_coverage.py probes)
 data/cache/
+.cache/
+# osmnx drops its Overpass response cache here
+cache/
 *.graphml
+*.gpkg

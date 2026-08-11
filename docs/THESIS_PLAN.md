@@ -43,6 +43,15 @@ range. Consequences:
 - **Along the street**, the roofline never blocks; the limit is the sensor.
   ~830 m to recognise a vehicle type, ~2.8 km merely to detect one.
 
+> ✅ **Measured in Block B** — both bullets were assumptions and both now have
+> distributions ([`BLOCK_B.md`](BLOCK_B.md)). Across-street envelope: median
+> **43 m**, p10–p90 **24–88 m** (the 36 m figure is a fair centre, but report the
+> spread). Along-street sightline: median **127 m**, p90 387 m, with **99.8 %
+> below 830 m** — so the sensor limit is a non-binding ceiling and occlusion is
+> the binding constraint throughout, which is what the fidelity ladder needs.
+> The 830 m / 2.8 km pair has no derivation in this repo; do not defend the
+> exact value in the thesis, state that results are insensitive to it.
+
 So the real envelope is a long wedge down the street plus an overhead cone, and
 real OSM footprints make it richer — intersections open it in four directions,
 squares open it entirely. This is why occlusion must be computed from actual
@@ -354,8 +363,8 @@ Why each block exists, what it gates and which chapter it feeds:
 | Block | Deliverable | Done when |
 |---|---|---|
 | A | Channel, routing, energy + reward, unit-tested | ✅ done — 103 tests, hand-computed |
-| B | OSM/LoD2 pipeline for Frankfurt | Buildings + road graph cached as tensors; height coverage verified |
-| C | Occlusion (batched torch slab method) | Matches a slow shapely reference on random geometry |
+| B | LoD2/OSM pipeline for Frankfurt | ✅ done — `data/frankfurt_box.npz`, 23 tests; heights verified (LoD2, 100 %); sightline and canyon distributions measured |
+| C | Occlusion (batched torch slab method, **oriented** boxes) | Matches a slow shapely reference on random geometry; needs a broad phase at `M = 4220` |
 | D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s on GPU** |
 | E | Renderer + B0 scripted heuristic | Video of the heuristic completing an episode |
 | F | Fidelity levels F0–F4 as config flags | All five run; `R` calibration measured under F4 |

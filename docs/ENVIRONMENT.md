@@ -46,6 +46,14 @@ The 830 m recognition range holds only down a clear straight street; Frankfurt's
 streets bend, so 100–400 m is more typical. How often long sightlines actually
 occur is an empirical question — **measure it in Block B**, do not assume it.
 
+> ✅ **Measured** (`scripts/measure_sightlines.py`, 6766 rays over the real box).
+> Median sightline **127 m**, p90 387 m. The 100–400 m guess covers 51 % of
+> rays — but **40 % fall below 100 m**, so it was optimistic and acquisition is
+> harder than assumed. Only **0.2 % exceed 830 m**, so the sensor range never
+> binds and street topology really is what sets the difficulty, as claimed.
+> Full distributions and the caveat that this is a 2D ground-level measure:
+> [`BLOCK_B.md`](BLOCK_B.md) → "Measure this while you are here".
+
 **Route — pre-sampled, not random-at-junctions.** At reset, sample the full route
 as a path on the road graph *restricted to the map box*. Random turning behaves
 badly: it doubles back, stalls in cul-de-sacs, oscillates around one block, and

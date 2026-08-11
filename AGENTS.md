@@ -25,8 +25,8 @@ line of sight, so the relay chain is geometrically necessary.
 | Block | What | State |
 |---|---|---|
 | **A** | Channel, routing, energy, reward — all pure, batched, tested | ✅ **done**, 103 tests |
-| **B** | Frankfurt OSM/LoD2 pipeline → buildings + road graph as tensors | ⬅️ **next** |
-| C | Occlusion: batched torch segment-vs-box (slab method) | not started |
+| **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 23 tests |
+| **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ⬅️ **next** — needs a spec |
 | D | Batched env core + PettingZoo adapter; **≥1000 steps/s gate** | not started |
 | E | Renderer + B0 scripted heuristic baseline | not started |
 | F | Fidelity levels F0–F4 as config flags | not started |
@@ -37,9 +37,18 @@ Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze t
 environment end of March 2027** — results before are pilots, after are thesis
 material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 
-Block B is specified in [`docs/BLOCK_B.md`](docs/BLOCK_B.md). Why each block
-exists, what it gates and which thesis chapter it feeds:
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) now records what was
+measured and decided, and is the reference for the artefact's contents. **Block C
+has no spec yet** — write one before starting, per the just-in-time rule in
+[`docs/ROADMAP.md`](docs/ROADMAP.md), which also explains why each block exists,
+what it gates and which thesis chapter it feeds.
+
+**Two things Block B hands to Block C:**
+- `M = 4220` oriented boxes. A naive all-links × all-boxes test is ~10⁸
+  segment–box tests per batched step and **will not** meet D's throughput gate.
+  Design a broad phase (uniform grid or per-segment bbox cull) in from the start.
+- The slab test needs a per-box rotation first; `cos θ`/`sin θ` are baked into
+  the artefact so no trigonometry runs in the hot loop.
 
 ---
 
@@ -55,7 +64,7 @@ exists, what it gates and which thesis chapter it feeds:
 | [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | building the env: episodes, cue, curriculum, observations |
 | [`docs/MODELS.md`](docs/MODELS.md) | building actors/critics |
 | [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md) | before proposing adaptive transmit power |
-| [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | the current task |
+| [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | consuming `data/frankfurt_box.npz`, or touching geometry/routes |
 
 ---
 
@@ -76,9 +85,12 @@ debugging only; training uses a custom skrl multi-agent wrapper. (skrl's
 
 **Geometry offline.** `osmnx`/`shapely` are CPU-and-NumPy-only — used **only** in
 `scripts/prep_osm.py` to bake buildings into a tensor. Runtime occlusion is
-vectorized segment-vs-box (slab method) in pure torch. Buildings are 2.5D: check
-the segment's altitude across the 2D intersection interval, not just a planar
-crossing.
+vectorized segment-vs-**oriented**-box (slab method) in pure torch: rotate the
+segment into each box's local frame, then run the standard branch-free slab
+test. Axis-aligned boxes were measured and rejected — they fill 94 % of the
+Frankfurt box ([`docs/DECISIONS.md`](docs/DECISIONS.md)). Buildings are 2.5D:
+check the segment's altitude across the 2D intersection interval, not just a
+planar crossing.
 
 **Formulas are traceable.** Do not change path-loss / SINR / capacity / energy
 formulas without updating the hand-computed tests and checking the cited
@@ -114,7 +126,9 @@ mean ± std — RL returns are not normally distributed. Never report single run
 
 | | Value | Basis |
 |---|---|---|
-| City / area | Frankfurt, **1500 m** box | heterogeneous: low fabric gives a workable observation envelope, towers block A2A |
+| City / area | Frankfurt, **1500 m** box, centre **50.11200 N, 8.67040 E** (UTM 32N) | heterogeneous: low fabric gives a workable observation envelope, towers block A2A. Centre chosen by sweep — [`docs/BLOCK_B.md`](docs/BLOCK_B.md) |
+| Buildings | Hessen **LoD2** via INSPIRE WFS, **oriented** boxes | 100 % height coverage; AABBs fill 94 % of the box and were rejected |
+| HVT roads | all surface streets, speed capped **13.9 m/s** | the constraint is speed, not road class |
 | Ptx | **30 dBm fixed** | UAV tactical MANET radios are 0.5–2 W |
 | Jammer | 30 dBm in-band, rides the HVT | vehicle C-UAS barrage emitter |
 | Carrier / bandwidth | 3.5 GHz / **10 MHz** | so the 5 Mbps target actually binds |
@@ -129,6 +143,14 @@ mean ± std — RL returns are not normally distributed. Never report single run
 Regenerate the sizing with [`scripts/scenario_design.py`](scripts/scenario_design.py)
 and [`scripts/link_budget_check.py`](scripts/link_budget_check.py);
 `tests/test_scenario_sizing.py` pins the trade-off table.
+
+**Measured in Block B, replacing assumptions** ([`docs/BLOCK_B.md`](docs/BLOCK_B.md)):
+street width median **21 m** (assumed 20) · canyon ratio `H_b/W` median **0.93**
+(assumed 1.10) · across-street envelope at 80 m median **43 m**, p10–p90 24–88
+(assumed a flat 36) · along-street sightline median **127 m**, p90 387.
+The **830 m sensor range never binds** — 99.8 % of sightlines are shorter — so
+occlusion is the constraint everywhere, which is what keeps RQ1 measuring channel
+physics rather than sensor specification.
 
 ---
 
@@ -152,9 +174,14 @@ src/models/    GNN / DeepSets / MLP actor-critic
 src/training/  skrl wrappers, entrypoints
 scripts/       offline data prep + scenario tooling
 configs/       YAML per experiment condition
+data/          baked artefacts — frankfurt_box.npz IS the frozen environment
 tests/         cross-module only — unit tests are CO-LOCATED
 docs/          reference, read on demand
 ```
+`data/frankfurt_box.npz` is **committed on purpose**, not a build product: OSM and
+the LoD2 service both change, so re-running `prep_osm.py` in 2027 would silently
+produce a different map. The file in git is the environment; the script only
+documents how it was made.
 - Unit tests sit next to their module: `src/env/test_channel.py`.
 - Naming: `hvt`, `mcv_base`, `sinr_db`, `capacity_mbps`, `edge_weight`,
   `ptx_dbm`. Keep tactical/telecom terms consistent.
@@ -164,6 +191,12 @@ docs/          reference, read on demand
 ## Build / test
 ```bash
 uv sync
-uv run pytest                                    # 103 tests
+uv run pytest                                    # 126 tests
 uv run ruff check . && uv run ruff format .
+```
+Offline data prep (needs network; the artefact is committed, so this is only for
+regenerating it deliberately):
+```bash
+uv run python scripts/prep_osm.py --plot         # bake data/frankfurt_box.npz
+uv run python scripts/measure_sightlines.py --plot
 ```

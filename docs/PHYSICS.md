@@ -122,6 +122,19 @@ Frankfurt), not a range:
 - **along-street:** the roofline never blocks; the sensor limits instead
   (~830 m to recognise a vehicle, ~2.8 km to detect one).
 
+> **Measured (Block B).** Both bullets were assumptions; both are now checked
+> against the real box (`scripts/measure_sightlines.py`).
+> Across-street envelope: median **43 m**, p10–p90 **24–88 m** — the 36 m figure
+> is a fair central value but the spread is a factor of ~3.7, so report the
+> distribution. Canyon ratio `H_b/W`: median **0.93** against the assumed 1.10;
+> street width median **21 m** against the assumed 20 m.
+> Along-street sightline: median **127 m**, p90 387 m, and **99.8 % fall below
+> 830 m**. The sensor range is therefore a **non-binding ceiling** — occlusion
+> cuts first everywhere — which is what keeps RQ1 measuring channel physics
+> rather than sensor specification. The 830 m / 2.8 km pair itself has no
+> derivation in this repo; treat it as unverified and do not defend the exact
+> value. See [`BLOCK_B.md`](BLOCK_B.md) → "The 830 m recognition range".
+
 So the envelope is a wedge down the street plus an overhead cone — **not a
 36 m disc**. Compute it from real footprints, never from a radius.
 

@@ -16,7 +16,7 @@ realistic physics, and *which* physics is responsible?
 | [`AGENTS.md`](AGENTS.md) | entry point — current state, hard rules, settled parameters |
 | [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md) | research design: questions, conditions, metrics, timeline |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | what was tried and rejected, with evidence |
-| [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | the current task |
+| [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | the geometry pipeline and what it measured |
 
 Reference docs read on demand: [`PHYSICS`](docs/PHYSICS.md) ·
 [`REWARD`](docs/REWARD.md) · [`ENVIRONMENT`](docs/ENVIRONMENT.md) ·
@@ -25,7 +25,7 @@ Reference docs read on demand: [`PHYSICS`](docs/PHYSICS.md) ·
 ## Setup
 ```bash
 uv sync
-uv run pytest                                    # 103 tests
+uv run pytest                                    # 126 tests
 uv run ruff check . && uv run ruff format .
 ```
 
@@ -34,11 +34,19 @@ GPU — see AGENTS.md for the device-split rationale.
 
 ## Status
 
-**Block A complete.** Channel model, relay routing, rotary-wing energy and the
-reward function are implemented as pure batched torch, with hand-computed test
-assertions. Not yet built: OSM pipeline, occlusion, the batched env core,
-models, training.
+**Blocks A and B complete.** Channel model, relay routing, rotary-wing energy and
+the reward function are pure batched torch with hand-computed test assertions.
+The Frankfurt geometry is baked into `data/frankfurt_box.npz` — 4220 oriented
+building boxes with measured LoD2 heights, the road graph, and 2048 pre-sampled
+HVT routes. Not yet built: occlusion, the batched env core, models, training.
 
-Scenario is derived rather than guessed: Frankfurt, 1500 m operating area,
-30 dBm fixed transmit power, 10 MHz at 3.5 GHz, 5 Mbps end-to-end target,
-600-step (240 s) episodes.
+Scenario is derived rather than guessed: Frankfurt, 1500 m operating area centred
+on 50.11200 N / 8.67040 E, 30 dBm fixed transmit power, 10 MHz at 3.5 GHz,
+5 Mbps end-to-end target, 600-step (240 s) episodes.
+
+Assumptions get measured rather than trusted. Building heights come from Hessen
+LoD2 (100 % coverage) after OSM was checked and rejected at 58 %; the canyon
+ratio, street width, observation envelope and sightline distributions are all
+measured from the real box, and the sensor range was shown to be non-binding.
+Evidence for each is in [`docs/BLOCK_B.md`](docs/BLOCK_B.md) and
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
