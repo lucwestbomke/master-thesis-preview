@@ -231,6 +231,53 @@ def test_route_bank_is_diverse(art):
     assert len(np.unique(flat, axis=0)) > 0.5 * len(xy)
 
 
+def _inside_any_box(pts, boxes, chunk=600):
+    """Is each 2D point inside any oriented footprint? (NumPy only, on purpose.)"""
+    cx, cy, hw, hh, ca, sa = boxes.astype(np.float64).T
+    out = np.zeros(len(pts), dtype=bool)
+    for i in range(0, len(boxes), chunk):
+        s = slice(i, i + chunk)
+        dx = pts[:, None, 0] - cx[s]
+        dy = pts[:, None, 1] - cy[s]
+        lx = dx * ca[s] + dy * sa[s]
+        ly = -dx * sa[s] + dy * ca[s]
+        out |= ((np.abs(lx) <= hw[s]) & (np.abs(ly) <= hh[s])).any(axis=1)
+    return out
+
+
+def test_mcv_never_spawns_inside_a_building(art):
+    """The MCV never moves, so a spawn inside a footprint kills every link."""
+    mcv = np.unique(art["route_mcv"], axis=0).astype(np.float64)
+    assert _inside_any_box(mcv, art["building_boxes"]).sum() == 0
+
+
+def test_hvt_rarely_passes_through_a_building(art):
+    """A point inside an obstacle is blocked by construction.
+
+    Some overlap is legitimate -- roads really do run under podiums and through
+    arcades, and brief unobservability is the handoff pressure RQ3 studies. But
+    it was 6.3 % before bridge decks were dropped and footprints split, with one
+    route spending 333 of 600 steps inside a single box. See docs/BLOCK_C.md.
+    """
+    xy = art["route_xy"].astype(np.float64)
+    sub = xy[::8]
+    ins = _inside_any_box(sub.reshape(-1, 2), art["building_boxes"])
+    assert ins.mean() < 0.03, f"{ins.mean():.1%} of route points are inside a building"
+
+
+def test_no_route_spends_long_inside_a_building(art):
+    xy = art["route_xy"].astype(np.float64)
+    sub = xy[::8]
+    per = _inside_any_box(sub.reshape(-1, 2), art["building_boxes"]).reshape(len(sub), -1)
+    worst = per.mean(axis=1).max()
+    assert worst <= 0.06, f"worst route is inside a building for {worst:.0%} of the episode"
+
+
+def test_boxes_do_not_swallow_the_road_network(art):
+    frac = _inside_any_box(art["road_nodes"].astype(np.float64), art["building_boxes"]).mean()
+    assert frac < 0.03, f"{frac:.1%} of road nodes are inside a building box"
+
+
 def test_routes_use_more_than_the_arterials(art):
     """Shortest-time routing once put every HVT on the 13.9 m/s roads only."""
     speed = np.linalg.norm(np.diff(art["route_xy"], axis=1), axis=2) / DT_S

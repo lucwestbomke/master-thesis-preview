@@ -35,8 +35,8 @@ simulator must include.
 | The claim needs… | …which requires… | …delivered by |
 |---|---|---|
 | A reference channel nobody can dismiss | standards-based path loss, SINR, rate, routing, energy — all tested | **A** ✅ |
-| Occlusion that is real, not a parameter | actual Frankfurt footprints and heights | **B** |
-| Occlusion computed fast enough to train against | batched torch ray-vs-box, 2.5D | **C** |
+| Occlusion that is real, not a parameter | actual Frankfurt footprints and heights | **B** ✅ |
+| Occlusion computed fast enough to train against | batched torch ray-vs-box, 2.5D | **C** ✅ |
 | Enough samples to make 45 runs affordable | batched env at ≥1000 steps/s | **D** |
 | Proof MARL earns its keep | a scripted geometric baseline (B0) | **E** |
 | The independent variable itself | F0–F4 as config flags on one env | **F** |
@@ -80,16 +80,16 @@ only the methodology chapter.
 ## Blocks
 
 Each gets a full spec when it becomes *next* — written just-in-time, because a
-spec written six months early goes stale. Only the current block has one:
-[`BLOCK_C.md`](BLOCK_C.md). [`BLOCK_B.md`](BLOCK_B.md) is kept as the record of
-what was measured and what the artefact contains.
+spec written six months early goes stale. **Block D has no spec yet; write one
+before starting.** [`BLOCK_B.md`](BLOCK_B.md) and [`BLOCK_C.md`](BLOCK_C.md) are
+kept as the record of what was measured and decided.
 
 | Block | Delivers | Serves | Gate | Fails if |
 |---|---|---|---|---|
 | **A** ✅ | channel, routing, energy, reward — pure, batched, tested | all | 103 tests, hand-computed | — |
 | **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
-| **C** ⬅️ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry | too slow → blows D's throughput gate. `M = 4220`, so a broad phase is mandatory |
-| **D** | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** | below gate → 45 runs unaffordable, matrix must shrink |
+| **C** ✅ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry ✅ | too slow → blows D's throughput gate. Fusion via `torch.compile` is what makes it viable |
+| **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
 | **F** | F0–F4 as config flags on one env | **RQ1 directly** | all five run; `R` calibrated under F4 | uncalibrated `R` → RQ1 comparison is meaningless |
 | **G** | MAPPO + curriculum | everything | one toy run beats random | nothing learns → the usual place projects stall |
@@ -130,8 +130,8 @@ chapters shows what can be written *early*:
 ```
 A ████████████████████  done   physics, tested, frozen
 B ████████████████████  done   geometry baked → data/frankfurt_box.npz
-C ░░░░░░░░░░░░░░░░░░░░  next   docs/BLOCK_C.md — opens with a data fix
-D ░░░░░░░░░░░░░░░░░░░░         ← the gate that decides the experiment matrix
+C ████████████████████  done   occlusion, validated + benchmarked
+D ░░░░░░░░░░░░░░░░░░░░  next   ← the gate that decides the experiment matrix
 E ░░░░░░░░░░░░░░░░░░░░
 F ░░░░░░░░░░░░░░░░░░░░
 G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall

@@ -12,6 +12,12 @@ Consumes `data/frankfurt_box.npz` from [`BLOCK_B.md`](BLOCK_B.md). Produces
 
 ---
 
+> **Status: done.** `src/env/occlusion.py` + `src/env/test_occlusion.py` (24
+> tests) + `tests/test_occlusion_map.py` (5) + `scripts/bench_occlusion.py`.
+> The artefact was re-baked to fix the road-swallowing problem below. What was
+> found and measured is recorded at the end of this file; the sections in
+> between are the spec as written, kept because the reasoning still applies.
+
 ## Fix this before writing any code
 
 **35 building boxes swallow the road network.** Measured on the shipped artefact:
@@ -150,10 +156,11 @@ above this should be rare. Document whichever you choose — it changes results.
 ## Throughput is the binding constraint
 
 Block D needs **≥1000 env-steps/s**. The arithmetic at `num_envs = 1024`,
-`K = 7` nodes (5 drones + MCV + HVT), `M = 4220` boxes:
+`K = 7` nodes (5 drones + MCV + HVT), `M` boxes (4220 when this was written,
+5120 after the road-swallowing fix below):
 
 ```
-1024 envs x 21 unordered pairs x 4220 boxes  =  91 M segment-box tests per step
+1024 envs x 21 unordered pairs x 5120 boxes  =  110 M segment-box tests per step
 ```
 
 **Memory, not flops, is what bites.** ~10 flops per test is ~0.9 TFLOP/s at the
@@ -205,17 +212,94 @@ module says sightlines are much longer, something is wrong.
 
 ## Definition of done
 
-- [ ] The 35 road-swallowing boxes investigated and resolved; artefact re-baked;
-      a test pins the road-intrusion rate
-- [ ] `src/env/occlusion.py`: pure, batched, no `.item()` / `.cpu()` / `.numpy()`
-- [ ] Returns **signed clearance in metres**, not a boolean
-- [ ] Matches a slow `shapely` reference on random geometry to ~1e-4 m
-- [ ] Edge cases above are covered by co-located unit tests
-      (`src/env/test_occlusion.py`)
-- [ ] Reproduces Block B's measured sightline distribution
-- [ ] Benchmarked at realistic `num_envs` and the real `M = 4220`, with the
-      number written down — Block D's gate depends on it
-- [ ] Works on CPU (local dev) and `cuda:0`, no silent device downgrade
+- [x] The 35 road-swallowing boxes investigated and resolved; artefact re-baked;
+      a test pins the road-intrusion rate — see "What the fix was" below
+- [x] `src/env/occlusion.py`: pure, batched, no `.item()` / `.cpu()` / `.numpy()`
+- [x] Returns **signed clearance in metres**, not a boolean
+- [x] Matches a slow `shapely` reference on random geometry to ~1e-4 m
+      (7 seeds, including segments starting inside footprints)
+- [x] Edge cases covered by co-located unit tests (`src/env/test_occlusion.py`,
+      24 tests)
+- [x] Reproduces Block B's measured sightline distribution
+      (`tests/test_occlusion_map.py`) — see below
+- [x] Benchmarked at realistic `num_envs` and the real `M`
+      (`scripts/bench_occlusion.py`) — **must be re-run on CUDA**
+- [x] Works on CPU and MPS with no silent downgrade; CUDA path untested locally
+
+---
+
+## What the fix was
+
+Three changes to `prep_osm.py`, then a re-bake:
+
+1. **Drop LoD2 bridge decks.** Cross-referenced against OSM `man_made=bridge`
+   and `bridge=*`; a part lying >50 % on a bridge is not a building. Two parts
+   dropped, removing **62.6 %** of all route intrusions on their own.
+2. **Split badly-fitting footprints** into up to 4 oriented boxes, recursing
+   while the single-OBB fit is worse than 1.5×. Over-approximation **+37 % →
+   +21 %** for 1.21× the box count.
+3. **Filter route sampling**: the MCV may not spawn inside a footprint (it never
+   moves, so that would kill every link for the whole episode), and a route is
+   rejected if it spends >5 % of the episode inside one.
+
+| | before | after |
+|---|---|---|
+| boxes `M` | 4220 | **5120** |
+| OBB fill of the box | 52 % | 46 % |
+| HVT route points inside a building | 6.34 % | **1.12 %** |
+| worst route, steps inside | 333 / 600 | **29 / 600** |
+| MCV spawns inside | 4 | **0** |
+| road nodes inside | 36 | 25 |
+
+The escalation profile is unchanged (404 / 709 / 1011 / 1333 m). The residual
+~1 % is roads genuinely running under podiums and through arcades — legitimate,
+and exactly the brief unobservability RQ3 studies.
+
+## Validation against the map
+
+`tests/test_occlusion_map.py` re-derives the sightline distribution using the
+production kernel on the baked boxes, and compares it with the offline
+measurement made by a completely different code path (shapely against the source
+LoD2 polygons). Same right-censoring treatment in both.
+
+| | kernel | offline |
+|---|---|---|
+| median sightline | 118 m | 127 m |
+| p90 | 379 m | 387 m |
+| censored | 13 % | 16 % |
+| beyond 830 m | 0.1 % | 0.2 % |
+
+The kernel reads slightly *shorter*, which is the expected direction — oriented
+boxes still over-approximate real footprints by ~21 %.
+
+## Measured throughput
+
+`M = 5120`, `K = 7` nodes ⇒ 21 links/env. Apple M-series **MPS**, fp32:
+
+| num_envs | tests/step | eager | **`torch.compile`** | speedup |
+|---|---|---|---|---|
+| 64 | 6.9 M | 35 st/s | **885 st/s** | 25× |
+| 256 | 27.5 M | 8 st/s | **503 st/s** | 64× |
+| 1024 | 110 M | 1.8 st/s | **130 st/s** | 73× |
+| 2048 | 220 M | 0.9 st/s | **53 st/s** | 60× |
+
+**Fusion is the whole story, and it confirms the diagnosis in this spec.**
+Arithmetic was never the wall — 110 M tests/step is 3.3 GFLOP, i.e. 3.3 TFLOP/s
+at the gate against ~19.5 TFLOP/s fp32 on an A100. The wall was memory: unfused,
+the elementwise slab chain writes ~20 intermediates of `(links × M)`, about
+17.6 GB/step at `num_envs = 1024`, which would need 17 600 TB/s to hit the gate.
+`torch.compile` keeps those intermediates in registers and the traffic collapses.
+
+⚠️ **These are MPS numbers on a laptop and are a lower bound, not the verdict.**
+Training runs on a rented CUDA GPU. Re-run `scripts/bench_occlusion.py` there
+before Block D's gate is declared met, and treat the compiled path as required
+rather than optional.
+
+If more headroom is needed, the next lever is a **spatial broad phase**: at
+2275 boxes/km², a 500 m segment with a 40 m corridor has ~45 real candidates
+rather than 5120 — a ~100× reduction. Not built, because fusion may already be
+enough and an unnecessary index structure is a correctness risk in the module
+that *is* RQ1's independent variable.
 
 ## Watch out for
 

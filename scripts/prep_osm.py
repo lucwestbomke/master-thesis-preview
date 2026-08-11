@@ -43,7 +43,10 @@ import numpy as np
 import osmnx as ox
 from check_lod2_coverage import PAGE, bbox_deg, fetch_page, parse_members
 from choose_box import EXCLUDED_CLASSES, ROUTE_SPEEDS, SPEED_CAP_MS
+from shapely.geometry import LineString
 from shapely.geometry import box as shapely_box
+from shapely.ops import split as shapely_split
+from shapely.ops import unary_union
 
 # --------------------------------------------------------------------------
 # frozen scenario parameters -- see AGENTS.md / docs/BLOCK_B.md
@@ -59,6 +62,16 @@ GRID_N = int(BOX_SIZE_M // GRID_CELL_M)  # 75
 MIN_PART_AREA_M2 = 5.0  # LoD2 wall slivers below this are noise
 MIN_PART_HEIGHT_M = 2.0  # sub-2 m "buildings" are LoD2 artefacts, not obstacles
 MIN_PART_HALF_M = 0.5  # and neither is a box thinner than a metre
+
+# A LoD2 part lying this much on an OSM bridge is a bridge deck, not a building.
+BRIDGE_OVERLAP = 0.5
+BRIDGE_HALF_WIDTH_M = 12.0  # OSM bridge ways are lines; give them a deck width
+
+# Split a footprint into several oriented boxes while its single-OBB fit is
+# worse than this. 1.5 / 4 parts takes over-approximation from +37 % to +21 %
+# for 1.21x the box count -- see docs/BLOCK_C.md.
+OBB_SPLIT_RATIO = 1.5
+OBB_MAX_PARTS = 4
 
 # Episode: 600 steps x 0.4 s = 240 s (AGENTS.md)
 EPISODE_STEPS = 600
@@ -87,6 +100,10 @@ CONGESTION_FACTOR = 0.70
 # route). ~2 keeps routes varied while still escalating the hop count.
 OUTWARD_BIAS = 2.0
 MAX_ROUTE_NODES = 400
+
+# Reject a route that spends more than this fraction of the episode inside a
+# building footprint -- it would be unobservable and the episode unwinnable.
+MAX_ROUTE_INSIDE_FRAC = 0.05
 
 N_ROUTES = 2048
 
@@ -138,6 +155,46 @@ def fetch_buildings(refresh: bool) -> gpd.GeoDataFrame:
     return gdf
 
 
+def fetch_bridges(refresh: bool):
+    """Union of OSM bridge footprints, in UTM metres, or None if there are none.
+
+    Used to reject LoD2 parts that are bridge decks rather than buildings.
+    Bridge *ways* are lines, so they are buffered to a plausible deck half-width.
+    """
+    CACHE.mkdir(parents=True, exist_ok=True)
+    path = CACHE / "bridges.gpkg"
+    if path.exists() and not refresh:
+        br = gpd.read_file(path)
+    else:
+        print("fetching bridges ...")
+        parts = []
+        for tags in ({"man_made": "bridge"}, {"bridge": True}):
+            try:
+                x = ox.features.features_from_point(
+                    ORIGIN_LATLON, tags=tags, dist=BOX_SIZE_M / 2 + 100.0
+                )
+            except Exception as exc:  # noqa: BLE001 - no bridges is a valid answer
+                print(f"  [warn] bridge query {tags} failed: {exc}")
+                continue
+            if len(x):
+                parts.append(x[["geometry"]])
+        if not parts:
+            return None
+        br = gpd.GeoDataFrame(gpd.pd.concat(parts, ignore_index=True), crs=parts[0].crs)
+        br.to_file(path, driver="GPKG")
+
+    br = br.to_crs(UTM32N)
+    polys = [g for g in br.geometry if g.geom_type in ("Polygon", "MultiPolygon")]
+    lines = [
+        g.buffer(BRIDGE_HALF_WIDTH_M)
+        for g in br.geometry
+        if g.geom_type in ("LineString", "MultiLineString")
+    ]
+    if not polys and not lines:
+        return None
+    return unary_union(polys + lines)
+
+
 def fetch_roads(refresh: bool) -> nx.MultiDiGraph:
     CACHE.mkdir(parents=True, exist_ok=True)
     path = CACHE / "roads.graphml"
@@ -179,7 +236,52 @@ def oriented_box(poly) -> tuple[float, float, float, float, float, float] | None
     return float(cx), float(cy), float(half_w), float(half_h), float(axis[0]), float(axis[1])
 
 
-def build_buildings(gdf: gpd.GeoDataFrame, ox_, oy_) -> tuple[np.ndarray, np.ndarray]:
+def _long_axis(mrr):
+    """Unit vector along the rectangle's longer side, its length, and centre."""
+    c = np.asarray(mrr.exterior.coords)[:4]
+    edges = [c[1] - c[0], c[2] - c[1]]
+    lens = [float(np.hypot(*e)) for e in edges]
+    i = int(np.argmax(lens))
+    return edges[i] / max(lens[i], 1e-12), lens[i], np.asarray(mrr.centroid.coords[0])
+
+
+def split_to_boxes(poly, ratio_thresh: float, max_parts: int) -> list:
+    """Approximate a footprint by one or more oriented rectangles.
+
+    A single OBB around an L-shaped or curved block covers the courtyard and
+    often the street beside it -- measured, plain OBBs over-approximate built
+    area by +37 % and swallow road network. Cutting the polygon in half across
+    its long axis and recursing wherever the fit is still poor brings that to
+    +21 % for 1.21x the box count, which is the right trade when Block C's cost
+    is dominated by `M`.
+    """
+    out, stack = [], [(poly, max_parts)]
+    while stack:
+        p, budget = stack.pop()
+        if p.is_empty or p.area < MIN_PART_AREA_M2:
+            continue
+        mrr = p.minimum_rotated_rectangle
+        if mrr.is_empty or mrr.geom_type != "Polygon":
+            continue
+        if budget <= 1 or mrr.area / p.area <= ratio_thresh:
+            out.append(mrr)
+            continue
+        axis, length, centre = _long_axis(mrr)
+        normal = np.array([-axis[1], axis[0]])
+        cut = LineString([centre - normal * length * 2.0, centre + normal * length * 2.0])
+        try:
+            pieces = list(shapely_split(p, cut).geoms)
+        except Exception:  # noqa: BLE001 - degenerate geometry, keep the whole box
+            pieces = []
+        if len(pieces) < 2:
+            out.append(mrr)
+            continue
+        for q in pieces:
+            stack.append((q, max(budget // 2, 1)))
+    return out
+
+
+def build_buildings(gdf, bridges, ox_, oy_) -> tuple[np.ndarray, np.ndarray]:
     g = gdf.to_crs(UTM32N)
     g = g[g["height"].notna() & (g["height"] >= MIN_PART_HEIGHT_M)]
     half = BOX_SIZE_M / 2.0
@@ -190,20 +292,29 @@ def build_buildings(gdf: gpd.GeoDataFrame, ox_, oy_) -> tuple[np.ndarray, np.nda
     g = g[g.geometry.area >= MIN_PART_AREA_M2]
 
     boxes, heights = [], []
+    n_bridge = 0
     for geom, h in zip(g.geometry, g["height"], strict=True):
         parts = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
         for p in parts:
             if p.area < MIN_PART_AREA_M2:
                 continue
-            ob = oriented_box(p)
-            if ob is None:
+            # LoD2 ships bridge decks as buildings. Keeping them puts a solid
+            # slab along the road surface: the Untermainbruecke alone accounted
+            # for 63 % of all HVT-route-inside-a-building events.
+            if bridges is not None and p.intersection(bridges).area / p.area > BRIDGE_OVERLAP:
+                n_bridge += 1
                 continue
-            cx, cy, hw, hh, ca, sa = ob
-            if hh < MIN_PART_HALF_M:
-                continue
-            boxes.append((cx - ox_, cy - oy_, hw, hh, ca, sa))
-            heights.append(float(h))
+            for mrr in split_to_boxes(p, OBB_SPLIT_RATIO, OBB_MAX_PARTS):
+                ob = oriented_box(mrr)
+                if ob is None:
+                    continue
+                cx, cy, hw, hh, ca, sa = ob
+                if hh < MIN_PART_HALF_M:
+                    continue
+                boxes.append((cx - ox_, cy - oy_, hw, hh, ca, sa))
+                heights.append(float(h))
 
+    print(f"  dropped {n_bridge} bridge-deck parts")
     return np.asarray(boxes, dtype=np.float32), np.asarray(heights, dtype=np.float32)
 
 
@@ -348,7 +459,25 @@ def densify(nodes, edges, speeds, route_ok):
 # --------------------------------------------------------------------------
 
 
-def sample_routes(nodes: np.ndarray, G: nx.Graph, n_routes: int, seed: int):
+def inside_any_box(pts: np.ndarray, boxes: np.ndarray, chunk: int = 600) -> np.ndarray:
+    """(P,) bool — is each 2D point inside any oriented box footprint?
+
+    Same transform the runtime occlusion test uses, so "inside" means the same
+    thing here as it will there.
+    """
+    cx, cy, hw, hh, ca, sa = boxes.astype(np.float64).T
+    out = np.zeros(len(pts), dtype=bool)
+    for i in range(0, len(boxes), chunk):
+        s = slice(i, i + chunk)
+        dx = pts[:, None, 0] - cx[s]
+        dy = pts[:, None, 1] - cy[s]
+        lx = dx * ca[s] + dy * sa[s]
+        ly = -dx * sa[s] + dy * ca[s]
+        out |= ((np.abs(lx) <= hw[s]) & (np.abs(ly) <= hh[s])).any(axis=1)
+    return out
+
+
+def sample_routes(nodes: np.ndarray, G: nx.Graph, n_routes: int, seed: int, boxes=None):
     """Pre-sample HVT routes as (mcv_xy, trajectory) pairs.
 
     Sampling offline means `reset()` only has to index a tensor: no graph search
@@ -360,7 +489,13 @@ def sample_routes(nodes: np.ndarray, G: nx.Graph, n_routes: int, seed: int):
     d_all = np.linalg.norm(nodes[:, None] - nodes[None, :], axis=-1)
 
     # Only MCV positions from which the escalation is geometrically reachable.
-    mcv_pool = np.flatnonzero(d_all.max(axis=1) >= MCV_MIN_REACH_M)
+    ok = d_all.max(axis=1) >= MCV_MIN_REACH_M
+    # ...and that are not inside a building. The MCV never moves, so a spawn
+    # inside a footprint means every one of its links is dead for the whole
+    # episode -- strictly worse than the moving HVT briefly passing through one.
+    if boxes is not None:
+        ok &= ~inside_any_box(nodes.astype(np.float64), boxes)
+    mcv_pool = np.flatnonzero(ok)
     if not len(mcv_pool):
         raise RuntimeError("no MCV position can reach MCV_MIN_REACH_M in this box")
 
@@ -390,6 +525,14 @@ def sample_routes(nodes: np.ndarray, G: nx.Graph, n_routes: int, seed: int):
         d1 = float(np.linalg.norm(traj[-1] - nodes[m]))
         if d1 - d0 < 500.0:
             continue
+
+        # A road genuinely running under a podium or through an arcade is real,
+        # and brief unobservability is legitimate difficulty -- it is the handoff
+        # pressure RQ3 studies. Half an episode underneath one is not.
+        if boxes is not None:
+            frac = float(inside_any_box(traj.astype(np.float64), boxes).mean())
+            if frac > MAX_ROUTE_INSIDE_FRAC:
+                continue
 
         mcvs.append(nodes[m])
         trajs.append(traj)
@@ -516,7 +659,9 @@ def main() -> None:
     ox_, oy_ = local_origin_utm()
     print(f"origin {ORIGIN_LATLON} -> UTM32N ({ox_:.1f}, {oy_:.1f})")
 
-    boxes, heights = build_buildings(fetch_buildings(args.refresh), ox_, oy_)
+    boxes, heights = build_buildings(
+        fetch_buildings(args.refresh), fetch_bridges(args.refresh), ox_, oy_
+    )
     print(f"buildings: {len(boxes)} oriented boxes")
 
     grid = build_height_grid(boxes, heights)
@@ -531,7 +676,7 @@ def main() -> None:
     )
 
     print(f"sampling {args.routes} routes ...")
-    route_mcv, route_xy = sample_routes(junctions, G, args.routes, args.seed)
+    route_mcv, route_xy = sample_routes(junctions, G, args.routes, args.seed, boxes)
     print(f"routes: {len(route_mcv)}")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

@@ -364,7 +364,7 @@ Why each block exists, what it gates and which chapter it feeds:
 |---|---|---|
 | A | Channel, routing, energy + reward, unit-tested | ✅ done — 103 tests, hand-computed |
 | B | LoD2/OSM pipeline for Frankfurt | ✅ done — `data/frankfurt_box.npz`, 23 tests; heights verified (LoD2, 100 %); sightline and canyon distributions measured |
-| C | Occlusion (batched torch slab method, **oriented** boxes) | Matches a slow shapely reference on random geometry; needs a broad phase at `M = 4220` |
+| C | Occlusion (batched torch slab method, **oriented** boxes) | ✅ done — matches a slow shapely reference on random geometry, and reproduces the map's measured sightline distribution; `torch.compile` gives 73× |
 | D | Batched env core + PettingZoo adapter | Random policy runs; **≥1000 env-steps/s on GPU** |
 | E | Renderer + B0 scripted heuristic | Video of the heuristic completing an episode |
 | F | Fidelity levels F0–F4 as config flags | All five run; `R` calibration measured under F4 |

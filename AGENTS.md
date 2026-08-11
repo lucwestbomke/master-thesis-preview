@@ -25,9 +25,9 @@ line of sight, so the relay chain is geometrically necessary.
 | Block | What | State |
 |---|---|---|
 | **A** | Channel, routing, energy, reward — all pure, batched, tested | ✅ **done**, 103 tests |
-| **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 23 tests |
-| **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ⬅️ **next** — needs a spec |
-| D | Batched env core + PettingZoo adapter; **≥1000 steps/s gate** | not started |
+| **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 27 tests |
+| **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
+| **D** | Batched env core + PettingZoo adapter; **≥1000 steps/s gate** | ⬅️ **next** — needs a spec |
 | E | Renderer + B0 scripted heuristic baseline | not started |
 | F | Fidelity levels F0–F4 as config flags | not started |
 | G | MAPPO integration + curriculum | not started |
@@ -42,11 +42,11 @@ and decided, and is the reference for the artefact's contents. Block C is
 specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md). Why each block exists, what it
 gates and which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-⚠️ **Block C opens with a data fix, not code.** 35 building boxes swallow road
-network — 6.3 % of HVT route points sit inside one, and one route spends 333 of
-600 steps there, which makes those episodes unwinnable. It is concentrated (top 5
-boxes = 85 %) and only ~30 % of it is OBB over-approximation; the rest is a real
-OSM-vs-LoD2 disagreement. Details and the fix in `docs/BLOCK_C.md`.
+⚠️ **Occlusion needs `torch.compile`.** Eager, the slab chain writes ~20
+intermediates of `(links × M)` — 17.6 GB/step at `num_envs = 1024`. Fusing them
+is a **73× speedup** (1.8 → 130 steps/s on MPS). Arithmetic was never the wall.
+Measured numbers in [`docs/BLOCK_C.md`](docs/BLOCK_C.md); **re-run
+`scripts/bench_occlusion.py` on CUDA** before declaring D's gate met.
 
 ---
 
@@ -63,7 +63,7 @@ OSM-vs-LoD2 disagreement. Details and the fix in `docs/BLOCK_C.md`.
 | [`docs/MODELS.md`](docs/MODELS.md) | building actors/critics |
 | [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md) | before proposing adaptive transmit power |
 | [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | consuming `data/frankfurt_box.npz`, or touching geometry/routes |
-| [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | **the current task** — batched occlusion |
+| [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | touching occlusion, or the geometry it consumes |
 
 ---
 
@@ -190,7 +190,7 @@ documents how it was made.
 ## Build / test
 ```bash
 uv sync
-uv run pytest                                    # 126 tests
+uv run pytest                                    # 158 tests
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for

@@ -113,8 +113,9 @@ the slowest match.
 
 **Oriented boxes, not axis-aligned ones.** Measured on the chosen box, one AABB
 per part is **not usable**. (The comparison below is over the 4351 parts passing
-the 5 m² area filter alone; the shipped artefact holds 4220 after the ≥2 m height
-and ≥0.5 m thickness filters are also applied. The ratios are unaffected.)
+the 5 m² area filter alone. The shipped artefact holds 5120 after the height and
+thickness filters *and* Block C's footprint splitting, which took
+over-approximation further, to +21 %. The ratios below are unaffected.)
 
 | | median ratio | p90 | total area | share of box filled |
 |---|---|---|---|---|
@@ -355,7 +356,8 @@ along-street number bounds it, which is why 0.2 % is safe as a conclusion.
 - [x] Height coverage measured and reported (raw and area-weighted); source chosen
       → **Hessen LoD2 via INSPIRE WFS**, 100 % coverage. See the gate section above.
 - [x] `scripts/prep_osm.py` runs offline and caches the artefact
-      → `data/frankfurt_box.npz`, 9.1 MB: 4220 oriented boxes (52 % fill),
+      → `data/frankfurt_box.npz`, 9.1 MB: 5120 oriented boxes (46 % fill;
+      4220 before Block C's bridge-and-split fix),
       1757 densified road nodes / 1882 segments, 2048 pre-sampled routes
 - [x] Loading the artefact needs **no** `osmnx`/`shapely` import — `.npz`,
       and `tests/test_osm_pipeline.py` imports only NumPy to prove it

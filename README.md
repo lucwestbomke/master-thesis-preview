@@ -25,7 +25,7 @@ Reference docs read on demand: [`PHYSICS`](docs/PHYSICS.md) ·
 ## Setup
 ```bash
 uv sync
-uv run pytest                                    # 126 tests
+uv run pytest                                    # 158 tests
 uv run ruff check . && uv run ruff format .
 ```
 
@@ -34,11 +34,12 @@ GPU — see AGENTS.md for the device-split rationale.
 
 ## Status
 
-**Blocks A and B complete.** Channel model, relay routing, rotary-wing energy and
+**Blocks A, B and C complete.** Channel model, relay routing, rotary-wing energy and
 the reward function are pure batched torch with hand-computed test assertions.
-The Frankfurt geometry is baked into `data/frankfurt_box.npz` — 4220 oriented
+The Frankfurt geometry is baked into `data/frankfurt_box.npz` — 5120 oriented
 building boxes with measured LoD2 heights, the road graph, and 2048 pre-sampled
-HVT routes. Not yet built: occlusion, the batched env core, models, training.
+HVT routes. Occlusion is batched torch, validated against a shapely reference and against
+the map itself. Not yet built: the batched env core, models, training.
 
 Scenario is derived rather than guessed: Frankfurt, 1500 m operating area centred
 on 50.11200 N / 8.67040 E, 30 dBm fixed transmit power, 10 MHz at 3.5 GHz,
