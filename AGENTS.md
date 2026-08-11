@@ -199,3 +199,11 @@ regenerating it deliberately):
 uv run python scripts/prep_osm.py --plot         # bake data/frankfurt_box.npz
 uv run python scripts/measure_sightlines.py --plot
 ```
+Look at the map before trusting it — every geometry bug so far was found by
+happening to compute the right statistic, and the viewer finds the next one in
+seconds:
+```bash
+uv run python scripts/view_episode.py --worst --polygons   # boxes vs source footprints
+uv run python scripts/view_episode.py --route 0 --zoom --save ep.mp4
+uv run python scripts/bench_occlusion.py                   # re-run this on CUDA
+```

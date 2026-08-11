@@ -1,0 +1,269 @@
+"""Watch an episode: buildings, roads, MCV, HVT, and live line-of-sight.
+
+An inspection tool for `data/frankfurt_box.npz`, not the Block E presentation
+renderer. It exists because every map problem so far (axis-aligned boxes filling
+94 % of the city, boxes swallowing road network, LoD2 bridge decks duplicating
+the road surface) was found by happening to compute the right statistic. Looking
+at the thing is cheaper.
+
+It draws exactly what the env will consume -- the oriented boxes, not the
+original polygons -- so what you see is what occlusion tests against. The
+MCV-to-HVT ray is coloured by the real `src/env/occlusion.py` clearance, so a
+blocked ray on screen is a blocked link in training.
+
+Usage:
+    uv run python scripts/view_episode.py --route 0
+    uv run python scripts/view_episode.py --route 1936 --save ep.mp4
+    uv run python scripts/view_episode.py --worst          # most time indoors
+    uv run python scripts/view_episode.py --route 3 --zoom
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Polygon as MplPoly
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling scripts
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src package
+
+from src.env.occlusion import segment_clearance
+
+ARTEFACT = Path(__file__).resolve().parent.parent / "data" / "frankfurt_box.npz"
+OUTDIR = Path(__file__).resolve().parent.parent / ".cache" / "view"
+
+HALF = 750.0
+DT_S = 0.4
+HVT_Z = 1.5  # a vehicle
+MCV_Z = 2.0
+
+TOWER_M = 100.0
+MIDRISE_M = 40.0
+
+
+def _use_bundled_ffmpeg() -> bool:
+    """Point matplotlib at imageio-ffmpeg's binary if there is no system one.
+
+    `ffmpeg` is usually not on PATH, but `imageio-ffmpeg` is already a
+    dependency and ships one, so mp4 works without asking anyone to install
+    anything.
+    """
+    import shutil
+
+    import matplotlib
+
+    if shutil.which("ffmpeg"):
+        return True
+    try:
+        import imageio_ffmpeg
+
+        matplotlib.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+        return True
+    except Exception:  # noqa: BLE001 - fall back to GIF
+        return False
+
+
+def box_corners(b: np.ndarray) -> np.ndarray:
+    """(M,6) oriented boxes -> (M,4,2) corner polygons."""
+    cx, cy, hw, hh, ca, sa = b.T
+    local = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=float)
+    out = np.empty((len(b), 4, 2))
+    for i, (dx, dy) in enumerate(local):
+        x, y = dx * hw, dy * hh
+        out[:, i, 0] = cx + x * ca - y * sa
+        out[:, i, 1] = cy + x * sa + y * ca
+    return out
+
+
+def inside_any_box(pts: np.ndarray, boxes: np.ndarray, chunk: int = 600) -> np.ndarray:
+    cx, cy, hw, hh, ca, sa = boxes.astype(np.float64).T
+    out = np.zeros(len(pts), dtype=bool)
+    for i in range(0, len(boxes), chunk):
+        s = slice(i, i + chunk)
+        dx = pts[:, None, 0] - cx[s]
+        dy = pts[:, None, 1] - cy[s]
+        lx = dx * ca[s] + dy * sa[s]
+        ly = -dx * sa[s] + dy * ca[s]
+        out |= ((np.abs(lx) <= hw[s]) & (np.abs(ly) <= hh[s])).any(axis=1)
+    return out
+
+
+def source_footprints():
+    """Original LoD2 polygons in local metres, for visual comparison only.
+
+    Reads the offline cache, so this is the one place in the viewer that needs
+    `geopandas`. The env never sees polygons -- it only ever sees the boxes.
+    """
+    import geopandas as gpd
+    from prep_osm import BOX_SIZE_M, UTM32N, local_origin_utm
+
+    cache = Path(__file__).resolve().parent.parent / ".cache" / "prep_osm" / "lod2.gpkg"
+    if not cache.exists():
+        print(f"[warn] {cache} missing; run scripts/prep_osm.py --refresh")
+        return
+    ox_, oy_ = local_origin_utm()
+    half = BOX_SIZE_M / 2.0
+    g = gpd.read_file(cache).to_crs(UTM32N)
+    g = g.cx[ox_ - half : ox_ + half, oy_ - half : oy_ + half]
+    for geom in g.geometry:
+        for part in geom.geoms if geom.geom_type == "MultiPolygon" else [geom]:
+            xs, ys = part.exterior.coords.xy
+            yield np.asarray(xs) - ox_, np.asarray(ys) - oy_
+
+
+def clearance_series(mcv: np.ndarray, traj: np.ndarray, boxes, heights) -> np.ndarray:
+    """Signed MCV->HVT clearance at every step, from the production kernel."""
+    n = len(traj)
+    p0 = torch.tensor(np.c_[np.repeat(mcv[None], n, 0), np.full(n, MCV_Z)], dtype=torch.float64)
+    p1 = torch.tensor(np.c_[traj, np.full(n, HVT_Z)], dtype=torch.float64)
+    return segment_clearance(
+        p0, p1, torch.tensor(boxes, dtype=torch.float64), torch.tensor(heights, dtype=torch.float64)
+    ).numpy()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--route", type=int, default=0)
+    ap.add_argument("--worst", action="store_true", help="pick the route most often indoors")
+    ap.add_argument("--save", type=str, default=None, help="output .mp4 or .gif")
+    ap.add_argument("--zoom", action="store_true", help="follow the HVT instead of the whole box")
+    ap.add_argument("--stride", type=int, default=4, help="steps per rendered frame")
+    ap.add_argument("--fps", type=int, default=25)
+    ap.add_argument(
+        "--polygons",
+        action="store_true",
+        help="outline the source LoD2 footprints over the boxes, to see the approximation",
+    )
+    args = ap.parse_args()
+
+    art = np.load(ARTEFACT)
+    boxes = art["building_boxes"].astype(np.float64)
+    heights = art["building_heights"].astype(np.float64)
+    nodes = art["road_nodes"].astype(np.float64)
+    edges = art["road_edges"]
+    mcvs = art["route_mcv"].astype(np.float64)
+    routes = art["route_xy"].astype(np.float64)
+
+    idx = args.route
+    if args.worst:
+        frac = [inside_any_box(routes[i], boxes).mean() for i in range(0, len(routes), 8)]
+        idx = int(np.argmax(frac) * 8)
+        print(f"worst route is #{idx}: inside a building for {max(frac):.1%} of the episode")
+    idx = min(idx, len(routes) - 1)
+
+    mcv, traj = mcvs[idx], routes[idx]
+    indoors = inside_any_box(traj, boxes)
+    clear = clearance_series(mcv, traj, boxes, heights)
+    dist = np.linalg.norm(traj - mcv, axis=1)
+
+    print(f"route #{idx}")
+    print(f"  MCV at ({mcv[0]:+.0f}, {mcv[1]:+.0f})")
+    print(f"  separation {dist[0]:.0f} m -> {dist[-1]:.0f} m")
+    print(f"  steps inside a building: {indoors.sum()} / {len(traj)} ({indoors.mean():.1%})")
+    print(f"  MCV->HVT direct LoS clear on {100 * (clear >= 0).mean():.0f}% of steps")
+
+    # ---- figure ----------------------------------------------------------
+    fig, (ax, axc) = plt.subplots(2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [4, 1]})
+
+    corners = box_corners(boxes)
+    colours = np.where(
+        heights >= TOWER_M, "#c0392b", np.where(heights >= MIDRISE_M, "#8a8a8a", "#d8d8d8")
+    )
+    ax.add_collection(
+        PatchCollection(
+            [MplPoly(c, closed=True) for c in corners],
+            facecolors=colours,
+            edgecolors="#00000018",
+            linewidths=0.3,
+        )
+    )
+    if args.polygons:
+        for xs, ys in source_footprints():
+            ax.plot(xs, ys, color="#16a085", lw=0.8, alpha=0.9, zorder=2.5)
+        ax.plot([], [], color="#16a085", lw=0.8, label="source LoD2 footprint")
+
+    for a, b in edges:
+        ax.plot(
+            *zip(nodes[a], nodes[b], strict=True), color="#3498db", lw=0.5, alpha=0.55, zorder=2
+        )
+
+    ax.plot(traj[:, 0], traj[:, 1], color="#f39c12", lw=1.2, alpha=0.5, zorder=3)
+    ax.plot(*mcv, "k*", ms=20, zorder=6, label="MCV")
+    (hvt_dot,) = ax.plot([], [], "o", ms=11, color="#e74c3c", mec="k", zorder=7, label="HVT")
+    (ray,) = ax.plot([], [], lw=2.0, zorder=6)
+    (trail,) = ax.plot([], [], color="#e67e22", lw=2.5, zorder=5)
+    title = ax.set_title("")
+    ax.set_aspect("equal")
+    ax.legend(loc="upper left", fontsize=9)
+    ax.set_xlabel("metres east of box centre")
+    ax.set_ylabel("metres north of box centre")
+
+    axc.plot(np.arange(len(clear)) * DT_S, np.clip(clear, -80, 120), color="#2c3e50", lw=1.0)
+    axc.axhline(0, color="#c0392b", lw=1.0, ls="--")
+    axc.fill_between(
+        np.arange(len(clear)) * DT_S,
+        -80,
+        120,
+        where=indoors,
+        color="#c0392b",
+        alpha=0.25,
+        label="HVT inside a building box",
+    )
+    (cursor,) = axc.plot([], [], color="#e74c3c", lw=1.5)
+    axc.set_xlim(0, len(clear) * DT_S)
+    axc.set_ylim(-80, 120)
+    axc.set_xlabel("time (s)")
+    axc.set_ylabel("MCV→HVT clearance (m)")
+    axc.legend(fontsize=8, loc="upper right")
+
+    frames = range(0, len(traj), args.stride)
+
+    def draw(i):
+        p = traj[i]
+        hvt_dot.set_data([p[0]], [p[1]])
+        trail.set_data(traj[max(0, i - 100) : i + 1, 0], traj[max(0, i - 100) : i + 1, 1])
+        blocked = clear[i] < 0
+        ray.set_data([mcv[0], p[0]], [mcv[1], p[1]])
+        ray.set_color("#c0392b" if blocked else "#27ae60")
+        ray.set_alpha(0.8 if blocked else 0.9)
+        cursor.set_data([i * DT_S, i * DT_S], [-80, 120])
+        state = "BLOCKED" if blocked else "clear"
+        extra = "  [HVT inside a building box]" if indoors[i] else ""
+        title.set_text(
+            f"route #{idx}   t = {i * DT_S:5.1f} s   separation {dist[i]:4.0f} m   "
+            f"direct LoS {state} ({clear[i]:+.0f} m){extra}"
+        )
+        if args.zoom:
+            ax.set_xlim(p[0] - 250, p[0] + 250)
+            ax.set_ylim(p[1] - 250, p[1] + 250)
+        else:
+            ax.set_xlim(-HALF, HALF)
+            ax.set_ylim(-HALF, HALF)
+        return hvt_dot, ray, trail, cursor, title
+
+    anim = FuncAnimation(fig, draw, frames=frames, interval=1000 / args.fps, blit=False)
+    fig.tight_layout()
+
+    if args.save:
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        out = OUTDIR / args.save
+        if out.suffix != ".gif" and _use_bundled_ffmpeg():
+            anim.save(out, writer=FFMpegWriter(fps=args.fps, bitrate=2400))
+        else:
+            # no ffmpeg anywhere: GIF always works, Pillow is already a dep
+            out = out.with_suffix(".gif")
+            anim.save(out, writer=PillowWriter(fps=args.fps))
+        print(f"saved -> {out}")
+    else:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()
