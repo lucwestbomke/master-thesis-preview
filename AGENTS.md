@@ -37,18 +37,16 @@ Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze t
 environment end of March 2027** — results before are pilots, after are thesis
 material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 
-Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) now records what was
-measured and decided, and is the reference for the artefact's contents. **Block C
-has no spec yet** — write one before starting, per the just-in-time rule in
-[`docs/ROADMAP.md`](docs/ROADMAP.md), which also explains why each block exists,
-what it gates and which thesis chapter it feeds.
+Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) records what was measured
+and decided, and is the reference for the artefact's contents. Block C is
+specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md). Why each block exists, what it
+gates and which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-**Two things Block B hands to Block C:**
-- `M = 4220` oriented boxes. A naive all-links × all-boxes test is ~10⁸
-  segment–box tests per batched step and **will not** meet D's throughput gate.
-  Design a broad phase (uniform grid or per-segment bbox cull) in from the start.
-- The slab test needs a per-box rotation first; `cos θ`/`sin θ` are baked into
-  the artefact so no trigonometry runs in the hot loop.
+⚠️ **Block C opens with a data fix, not code.** 35 building boxes swallow road
+network — 6.3 % of HVT route points sit inside one, and one route spends 333 of
+600 steps there, which makes those episodes unwinnable. It is concentrated (top 5
+boxes = 85 %) and only ~30 % of it is OBB over-approximation; the rest is a real
+OSM-vs-LoD2 disagreement. Details and the fix in `docs/BLOCK_C.md`.
 
 ---
 
@@ -65,6 +63,7 @@ what it gates and which thesis chapter it feeds.
 | [`docs/MODELS.md`](docs/MODELS.md) | building actors/critics |
 | [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md) | before proposing adaptive transmit power |
 | [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | consuming `data/frankfurt_box.npz`, or touching geometry/routes |
+| [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | **the current task** — batched occlusion |
 
 ---
 

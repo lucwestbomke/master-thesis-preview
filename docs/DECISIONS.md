@@ -122,6 +122,50 @@ fill. The slab method is unchanged — rotate the segment into the box frame
 first, with `cos θ`/`sin θ` baked in offline. `M` stays at 4351; matching OBB
 fidelity with AABBs would need tens of thousands of boxes.
 
+### Flattening the MCV spawn quadrant bias
+Raised as a concern, then **investigated and dropped** — the fix would have been
+worse than the thing it fixed.
+
+The observation: all 121 MCV spawn points sit at `r > 500 m` from the box centre,
+and route counts split SW 34 % / NE 28 % / SE 25 % / NW 13 %.
+
+Three measurements killed it:
+
+| quadrant | eligible spots | routes | **routes/spot** |
+|---|---|---|---|
+| NE | 30 | 571 | 19.0 |
+| NW | 15 | 269 | **17.9** |
+| SE | 28 | 510 | 18.2 |
+| SW | 48 | 698 | **14.5** |
+
+1. **There is no sampling bias.** Every eligible junction is drawn about equally;
+   NW spots are sampled slightly *more* than SW ones. The route-count split is
+   entirely because NW has 15 eligible junctions and SW has 48 — a property of
+   Frankfurt's layout under the reach requirement, not of the sampler.
+2. **Flattening would concentrate repetition where it hurts most.** Forcing 512
+   routes per quadrant gives NW's 15 spots 34 routes each — **1.9× more**
+   repetition than now — on the smallest and most geometrically peculiar subset,
+   while SW drops to 10.7. That trades a weak concern for a stronger one.
+3. **The actor cannot see which quadrant it is in.** The 21 ego features contain
+   no absolute position except own altitude ([`ENVIRONMENT.md`](ENVIRONMENT.md) →
+   Observations). Everything else is relative or local sensing, so "the MCV is
+   usually south-west" is not representable. The only residual channel is the
+   pattern of clearance margins — and a policy responding to local building
+   geometry is doing the right thing, not cheating.
+
+The **periphery** constraint is separate and is arithmetic, not a choice: the box
+half-diagonal is 1060 m, so a centrally-parked MCV cannot reach the 1400 m the
+escalation needs. Only a larger box or less escalation would change it, and a
+command vehicle staging at the perimeter is the realistic reading anyway.
+
+**If diversity ever does bind, add positions rather than redistribute them.** MCV
+placement is currently restricted to graph *junctions*; nothing requires a vehicle
+to park at an intersection. Sampling from all densified road points gives **858
+eligible spots instead of 121** — a 7× increase, dropping per-spot repetition from
+17 to 2.4 — and barely moves the quadrant split, confirming the skew is the map.
+That is a one-line change in `sample_routes` plus a re-bake. First thing to try if
+RQ2 transfer ever looks like map memorisation.
+
 ### Rotating the whole map to rescue AABBs
 The obvious follow-up once AABBs fail. Swept map rotations 0–74°: the best is
 **+96 % at 30°**, still far worse than OBB's +38 %, and the fill never drops
@@ -144,5 +188,5 @@ the layer people reach for by default.
 | Local height raster | whether the policy is visibly blind without it (Block D/G) |
 | Second city for cross-morphology transfer | candidates London City (similar structure, different topology) or Barcelona (maximum contrast). Note LoD2 is a *Hessen* service — a second city needs its own height source, and the coverage gate must be re-run |
 | `830 m` recognition / `2.8 km` detection range | **unverified — no derivation exists in this repo.** Measured to be non-binding (99.8 % of sightlines are shorter), so results are insensitive to it; if a defensible number is ever needed, derive it from a stated camera rather than assert it. Same standing as the `TODO(verify)` constants |
-| MCV spawn is confined to the box periphery | all 121 spawn points sit at r > 500 m from the box centre, and the quadrant split is uneven (SW 34 % vs NW 13 %). Geometrically forced by `MCV_MIN_REACH_M`, and mitigated by observations being MCV-*relative*. Revisit if RQ2 transfer looks like map memorisation |
+| MCV spawn diversity — **investigated, no action** | see below |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |

@@ -80,7 +80,9 @@ only the methodology chapter.
 ## Blocks
 
 Each gets a full spec when it becomes *next* — written just-in-time, because a
-spec written six months early goes stale. Only the current block has one.
+spec written six months early goes stale. Only the current block has one:
+[`BLOCK_C.md`](BLOCK_C.md). [`BLOCK_B.md`](BLOCK_B.md) is kept as the record of
+what was measured and what the artefact contains.
 
 | Block | Delivers | Serves | Gate | Fails if |
 |---|---|---|---|---|
@@ -128,7 +130,7 @@ chapters shows what can be written *early*:
 ```
 A ████████████████████  done   physics, tested, frozen
 B ████████████████████  done   geometry baked → data/frankfurt_box.npz
-C ░░░░░░░░░░░░░░░░░░░░  next   needs a spec first
+C ░░░░░░░░░░░░░░░░░░░░  next   docs/BLOCK_C.md — opens with a data fix
 D ░░░░░░░░░░░░░░░░░░░░         ← the gate that decides the experiment matrix
 E ░░░░░░░░░░░░░░░░░░░░
 F ░░░░░░░░░░░░░░░░░░░░
