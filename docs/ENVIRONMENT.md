@@ -35,11 +35,37 @@ One-shot at launch, `σ ≈ 150 m`, **never refreshed**.
 > staleness, with a justification bolted on afterwards. The correct fix was to
 > shorten transit by starting close.
 
-Precision barely matters — drift during transit swamps `σ` anyway. Without *any*
-cue the target sits in a 300–500 m annulus in any direction; five drones would
-find it, but a random initial policy never would, so early training gets no
-gradient. The cue supplies a vector to fly along from step one. That is all it is
-for.
+Precision barely matters — drift during transit swamps `σ` anyway. The cue
+supplies a vector to fly along from step one. That is all it is for.
+
+> ✅ **Measured (Block D), and the original justification was wrong.** This
+> section used to argue that without a cue "a random initial policy never would"
+> find the target. Not so — the HVT starts in a 300–500 m annulus the drones
+> launch *inside*, and the sensor reaches 830 m. Five drones flying a radial fan
+> over 512 real routes ([`../scripts/measure_envelope.py`](../scripts/measure_envelope.py)):
+>
+> | strategy | ever found | t50 | t90 |
+> |---|---|---|---|
+> | **no cue**, 5-way fan | **100 %** | **8 s** | 22 s |
+> | cue σ=150 m, narrow fan | 99.8 % | 10 s | 22 s |
+> | no cue, all five on one bearing | 59.0 % | 13 s | 46 s |
+>
+> Uncued is *faster*. What matters is **spreading out**, not knowing the
+> direction. So the cue is not buying exploration — it buys away the need for
+> homogeneous agents to learn symmetry-breaking off the neighbour channel, a
+> coordination problem no RQ asks about, sitting in the block most likely to
+> stall. That is the honest reason, and it is weaker than the old one.
+> Consequently **the no-cue condition is a one-flag ablation, not the "optional
+> stage 5" below** — and it is the direct answer to *"isn't the cue a cheat?"*.
+> Note it leans on the 360° sensor assumption ([`BLOCK_D.md`](BLOCK_D.md)), which
+> is optimistic for search though not for tracking.
+>
+> **The cue is observable and persistent.** It occupies its own 3 dims (see
+> Observations) and is never zeroed, because a stale cue is not misleading:
+> `grow_outward` builds near-radial routes, so at t=599 it is still within 17.8°
+> of the target's bearing (p90 42.9°, 0.4 % of routes past 90°) and flying to it
+> beats sitting at the MCV in 99 % of routes. **It decays in range, not in
+> direction.**
 
 Acquisition difficulty is then set by **street topology, not by a parameter**.
 The 830 m recognition range holds only down a clear straight street; Frankfurt's
@@ -133,12 +159,24 @@ easy chapters first — then all four sit the same exam.
 Budget real time for this. It is where projects of this shape stall, and the cue
 is only one axis of four.
 
-| Stage | HVT speed | Jammer | Battery | Episode length | Cue | What it teaches |
+| Stage | HVT speed (`speed_scale`) | Jammer | Battery | Episode length | Cue | What it teaches |
 |---|---|---|---|---|---|---|
-| 1 | **stationary** | off | 3× | 150 steps | exact | fly out, form a chain, hold station |
-| 2 | residential (8 m/s) | off | 2× | 300 steps | exact | follow a moving target, keep the chain |
-| 3 | full road speed | **on** | 1.5× | 450 steps | σ=150 m | degraded links near the target |
-| 4 | full | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, observer handoff |
+| 1 | **stationary** (0.0) | off | 3× | 150 steps | exact | fly out, form a chain, hold station |
+| 2 | half pace (0.5) | off | 2× | 300 steps | exact | follow a moving target, keep the chain |
+| 3 | three-quarter (0.75) | **on** | 1.5× | 450 steps | σ=150 m | degraded links near the target |
+| 4 | full (1.0) | on | **design value** | 600 steps | σ=150 m | chain escalation, energy, observer handoff |
+
+⚠️ **The speed axis is a scale on the baked route, not a class speed.** An
+earlier version of this table quoted free-flow OSM class speeds (8.3 / 13.9 m/s),
+but the route bank already has `CONGESTION_FACTOR = 0.70` applied — realised
+speeds are median **5.8 m/s**, max 9.7 m/s ([`BLOCK_B.md`](BLOCK_B.md)). Stage
+2's old "residential 8 m/s" was therefore *above* the bank's median and the
+curriculum silently had no speed axis at all. Implement it as
+`idx = (t * speed_scale)` into `route_xy`, and note that a scale below 1.0 also
+weakens the escalation, which is correct: earlier stages should be easier.
+
+Battery multipliers are a `capacity_scale` divisor on drain, not a charge above
+1.0 — the observation must stay in `[0, 1]`.
 
 Reasoning per axis:
 
@@ -165,9 +203,12 @@ Two rules that protect the results:
 2. **Mix in earlier stages** (~20 % of episodes) rather than hard-switching, or
    the policy forgets the opening phase it still has to execute every episode.
 
-Optional stretch, only once tracking already works: **stage 5 with no cue at
-all** — genuine search. Legitimate as an endpoint; fatal as a starting point,
-because that is where it eats the learning signal.
+**No-cue running is no longer a stretch goal.** The measurement in the cue
+section shows an uncued fan acquires in 8 s over 100 % of routes, so "genuine
+search" is not the hard endpoint this section assumed. Treat it as a one-flag
+**ablation** run at full fidelity, not as a fifth curriculum stage — and report
+it, because it is the cleanest available answer to whether the cue is doing
+unearned work.
 
 ---
 
@@ -178,11 +219,12 @@ because that is where it eats the learning signal.
 state belongs to the critic. Violating this quietly turns decentralized execution
 into centralized execution and invalidates the whole CTDE framing.
 
-### Actor — ego features (21)
+### Actor — ego features (24)
 | Feature | Dims | Realizable from |
 |---|---|---|
 | own velocity | 3 | INS |
 | own altitude | 1 | absolute — LoS geometry depends on it |
+| **relative vector to the cue** | **3** | briefed at launch, never refreshed. Persistent all episode — see the cue section above |
 | battery | 1 | |
 | sees HVT (soft flag) | 1 | own sensor |
 | relative vector to HVT | 3 | own sensor; zeroed when not seen |
@@ -194,6 +236,22 @@ into centralized execution and invalidates the whole CTDE framing.
 | on active relay path | 1 | routing layer |
 | current e2e capacity | 1 | reported back down the chain |
 | steps since link last OK | 1 | proximity to episode failure |
+
+> **No time feature, deliberately.** Pardo et al. (2018) separate *time-limited*
+> tasks, where the horizon is part of the problem and remaining time belongs in
+> the observation, from *time-unlimited* ones, where the limit only diversifies
+> training and the correct treatment is partial-episode bootstrapping. This
+> mission is the second kind: 240 s covers the hop escalation, but nothing about
+> the mission ends there, and `reward.shaping` already says *"truncation is not
+> terminal — bootstrap the value there instead."* Observing the clock would let
+> the policy condition on an artificial horizon. **The requirement this creates:
+> the skrl wrapper must keep `terminated` and `truncated` distinct and bootstrap
+> at truncation** — asserted in Block D's smoke test, because wrappers routinely
+> collapse the two.
+>
+> Episode phase is legible anyway without a clock: HVT–MCV separation grows
+> monotonically 404 → 1333 m, and relative vector to the MCV is already listed
+> above.
 
 ### Actor — per-neighbour features (9 × N−1)
 Relative position (3), relative velocity (3), their battery (1), whether they see

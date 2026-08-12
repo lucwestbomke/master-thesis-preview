@@ -21,6 +21,17 @@ flat MLP conflates the two and is the weaker experiment.
 The MLP needs **max-N padding plus masking** or it cannot be evaluated off-N at
 all, which would rig the transfer comparison toward the GNN.
 
+**The env delivers that padding.** [`BLOCK_D.md`](BLOCK_D.md) fixes the
+observation contract: structured keys `ego (B,N,24)`, `neighbour (B,N,N-1,9)`,
+`edge (B,N,N-1,2)` for PyG batching and debugging, plus a **`flat (B,N,108)`**
+packing at `N_max = 8` — 24 ego + 7×9 neighbour + 7×2 edge + 7 validity bits —
+because skrl's rollout storage wants one fixed-shape tensor per agent. All three
+architectures consume `flat` and unpack it, so the padding is identical across
+rungs by construction rather than by discipline.
+
+Ego is 24, not 21: a persistent 3-dim vector to the cue was added, and no time
+feature was ([`ENVIRONMENT.md`](ENVIRONMENT.md) → Observations).
+
 ## Layer choice — the edge features are the whole point
 RQ2's GNN rung exists **only** to test whether link quality should modulate who a
 drone listens to. If the layer cannot ingest edge features, the GNN rung silently
@@ -81,7 +92,7 @@ stays normal. A reasonable build:
 
 | Component | Shape | Params |
 |---|---|---|
-| Ego encoder | 21 → 256 → 256 | ~70k |
+| Ego encoder | 24 → 256 → 256 | ~70k |
 | Message function φ (×2 layers) | (256+256+2) → 256 → 256 | ~400k |
 | Policy head | 256 → 256 → 6 | ~67k |
 | **Total actor** | | **~550k** |

@@ -27,7 +27,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **A** | Channel, routing, energy, reward — all pure, batched, tested | ✅ **done**, 103 tests |
 | **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 27 tests |
 | **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
-| **D** | Batched env core + PettingZoo adapter; **≥1000 steps/s gate** | ⬅️ **next** — needs a spec |
+| **D** | Batched env core + PettingZoo adapter; **≥1000 env-steps/s gate** | ⬅️ **next** — spec'd in [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | E | Renderer + B0 scripted heuristic baseline | not started |
 | F | Fidelity levels F0–F4 as config flags | not started |
 | G | MAPPO integration + curriculum | not started |
@@ -39,8 +39,9 @@ material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 
 Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) records what was measured
 and decided, and is the reference for the artefact's contents. Block C is
-specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md). Why each block exists, what it
-gates and which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
+[`docs/BLOCK_D.md`](docs/BLOCK_D.md). Why each block exists, what it gates and
+which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ⚠️ **Occlusion needs `torch.compile`.** Eager, the slab chain writes ~20
 intermediates of `(links × M)` — 17.6 GB/step at `num_envs = 1024`. Fusing them
@@ -64,6 +65,7 @@ Measured numbers in [`docs/BLOCK_C.md`](docs/BLOCK_C.md); **re-run
 | [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md) | before proposing adaptive transmit power |
 | [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | consuming `data/frankfurt_box.npz`, or touching geometry/routes |
 | [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | touching occlusion, or the geometry it consumes |
+| [`docs/BLOCK_D.md`](docs/BLOCK_D.md) | building the env core, or touching altitude / cue / sensor / the throughput gate |
 
 ---
 
@@ -74,8 +76,17 @@ or `.item()` inside env `step()` or the training hot loop** — `.item()` forces
 GPU sync and is the easy one to miss. Local dev is Apple Silicon (CPU/MPS), toy
 configs only. Guard device selection; never silently degrade a real run to CPU.
 
-**Throughput.** ≥1000 env-steps/s batched on GPU. A **gate, not an aspiration** —
-measure it before building anything on top of the env.
+**Throughput.** ≥1000 **env-steps/s**, where one env-step is *one environment
+advancing one tick*, summed across the batch — **not** one batched `step()` call.
+The two readings differ by 1000× and both appeared in this repo; the transition
+reading is the one THESIS_PLAN §3's budget is written in (10 M steps ÷ 1000/s
+≈ 2.8 h/run × 45 runs ≈ 120 GPU-h), and cost is what the gate protects. Settled
+in [`docs/BLOCK_D.md`](docs/BLOCK_D.md) — do not re-open it.
+
+Under that reading the 1000/s floor clears easily, so the number actually
+reported is **wall-clock for a 10 M-step run, end-to-end including the learner,
+target ≤3 h**. A **gate, not an aspiration** — measure it before building
+anything on top of the env.
 
 **Batched core, thin adapter.** The env core carries a leading `num_envs`
 dimension. The PettingZoo adapter exists for API-compliance tests and visual
@@ -115,9 +126,19 @@ mean ± std — RL returns are not normally distributed. Never report single run
   acquire, and a random initial policy never reaches the tracking phase.
 - ⛔ **Sweep more than `λ`.** Other weights are pinned by behavioural orderings
   in [`docs/REWARD.md`](docs/REWARD.md).
+- ⛔ **Raise the altitude ceiling above ~150 m.** At 180 m only 10 % of A2A links
+  are blocked and at 230 m none are — F1's A2A component disappears and RQ1's
+  primary result changes silently. Measured:
+  [`scripts/measure_envelope.py`](scripts/measure_envelope.py).
+- ⛔ **Move to mmWave.** It makes RQ1 trivial (mmWave is textbook
+  blockage-limited, so "occlusion matters" stops being a finding), needs
+  beamforming and beam-pointing modelling that couples to the motion policy, is
+  the wrong band for the tactical MANET radios Ptx is derived from, and would
+  invalidate Block A, PHYSICS.md and Chapter 3 before the freeze. It belongs in
+  future work, where it strengthens the discussion for free.
 - ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
 - ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
-  and `energy.py` mean exactly that.
+  and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
 
 ---
 
@@ -132,7 +153,7 @@ mean ± std — RL returns are not normally distributed. Never report single run
 | Jammer | 30 dBm in-band, rides the HVT | vehicle C-UAS barrage emitter |
 | Carrier / bandwidth | 3.5 GHz / **10 MHz** | so the 5 Mbps target actually binds |
 | Rate target | **5 Mbps** end-to-end | compressed HD EO/IR feed |
-| Flight altitude | 80 m nominal | above fabric, below towers; inside TR 36.777's 22.5–300 m band |
+| Flight altitude | 80 m nominal, band **40–120 m** | above fabric, below towers. Floor is a *model-validity* limit: below it 8–37 % of positions sit inside a building box, where occlusion's endpoint convention lets a drone see through its own building, and TR 36.777 stops at 22.5 m. Ceiling keeps 25 % of A2A links blocked — `TODO(verify)` its civil-UAS citation. [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | Drone speed | 20 m/s cruise, 25 m/s dash | 1.4–1.8× margin over the HVT |
 | HVT | 300–500 m from MCV, drives away | chain escalates 1 → 2 → 3 hops |
 | Episode | **600 steps × 0.4 s** = 240 s | covers the escalation to 3 hops |
@@ -184,12 +205,17 @@ documents how it was made.
 - Unit tests sit next to their module: `src/env/test_channel.py`.
 - Naming: `hvt`, `mcv_base`, `sinr_db`, `capacity_mbps`, `edge_weight`,
   `ptx_dbm`. Keep tactical/telecom terms consistent.
-- Observations: 21-dim ego, 9-dim per neighbour, 2-dim per edge. Actor stays
-  **agent-local**; global state belongs to the critic.
+- Observations: **24**-dim ego (21 + a persistent 3-dim vector to the cue), 9-dim
+  per neighbour, 2-dim per edge; packed flat at `N_max = 8` to **108** dims for
+  skrl's rollout storage. Actor stays **agent-local**; global state belongs to
+  the critic. **No time feature** — truncation is handled by bootstrapping, not
+  by observing the clock ([`docs/BLOCK_D.md`](docs/BLOCK_D.md)).
 
 ## Build / test
 ```bash
-uv sync
+uv sync --extra dev                              # `dev` is an EXTRA -- plain
+                                                 # `uv sync` gives you neither
+                                                 # pytest nor ruff
 uv run pytest                                    # 158 tests
 uv run ruff check . && uv run ruff format .
 ```
@@ -198,6 +224,12 @@ regenerating it deliberately):
 ```bash
 uv run python scripts/prep_osm.py --plot         # bake data/frankfurt_box.npz
 uv run python scripts/measure_sightlines.py --plot
+```
+Offline, no network — regenerates every number Block D's design rests on
+(altitude band, sensor envelope, cue staleness, uncued search, link budget):
+```bash
+uv run python scripts/measure_envelope.py
+uv run python scripts/measure_envelope.py --only a2a inside
 ```
 Look at the map before trusting it — every geometry bug so far was found by
 happening to compute the right statistic, and the viewer finds the next one in

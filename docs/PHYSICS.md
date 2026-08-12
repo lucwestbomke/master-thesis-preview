@@ -107,7 +107,7 @@ with [`scripts/scenario_design.py`](../scripts/scenario_design.py) and
 | Operating area | **1500 m** | solo drone manages ~1.7 Mbps (fails); swarm ~24 Mbps (feasible) |
 | Ptx | **30 dBm, fixed** | UAV tactical MANET radios are 0.5–2 W |
 | Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter |
-| Flight altitude | 80 m nominal | above fabric, below towers; inside TR 36.777's 22.5–300 m band |
+| Flight altitude | 80 m nominal, band **40–120 m** | above fabric, below towers; inside TR 36.777's 22.5–300 m band. Band derived below |
 
 > ⚠️ **Never raise Ptx to make the energy term measurable.** At 40 dBm a
 > *blocked* A2A link still carries 15 Mbps over 2.8 km, so one drone spans any
@@ -138,6 +138,67 @@ Frankfurt), not a range:
 So the envelope is a wedge down the street plus an overhead cone — **not a
 36 m disc**. Compute it from real footprints, never from a radius.
 
+## Sensor model — 360°, occlusion-limited
+
+`sees = (clearance ≥ 0) & (range ≤ 830 m)`. No pointing state, no attitude, no
+slew: a **gimballed EO/IR turret** has continuous 360° azimuth and full downward
+elevation and holds lock once tracking, so at `dt = 0.4 s` with one target
+"pointed at the target" is a fair approximation. Modelling it properly needs a
+pointing state plus a pointing action or auto-tracker — scope creep into gimbal
+control, excluded for the same reason as rigid-body flight dynamics.
+
+**Where this is optimistic is search, not tracking**, so it props up exactly one
+result: the no-cue ablation ([`ENVIRONMENT.md`](ENVIRONMENT.md)). Report that one
+as *"unaided acquisition is feasible given a gimballed sensor with negligible
+slew cost"*, never as *"the cue is unnecessary"*. A minimum depression angle was
+considered and rejected — it would trade one unsourced constant for two, and a
+binding sensor parameter confounds RQ1 ([`DECISIONS.md`](DECISIONS.md)).
+
+## Altitude band — 40 to 120 m, and it is load-bearing
+
+Nothing in the model charges for altitude (propulsion power is speed-only, a full
+climb is 0.55 % of the pack), and both physical effects improve with height, so
+**the band is the entire altitude policy** — expect `a_z` to saturate at the
+ceiling. Measured with the production kernel on the real boxes
+([`../scripts/measure_envelope.py`](../scripts/measure_envelope.py)):
+
+| altitude | A2A links blocked | HVT visible at 100–200 m offset | drone inside a building box |
+|---|---|---|---|
+| 40 m | 44.6 % | 22.7 % | 3.3 % |
+| 80 m | 31.2 % | 38.2 % | 1.9 % |
+| **120 m** | **24.6 %** | **48.1 %** | 1.4 % |
+| 180 m | 10.2 % | 55.9 % | — |
+| 230 m | **0.0 %** | — | — |
+
+**Ceiling:** above ~180 m the tower cluster stops blocking air-to-air links at
+all, F1's A2A component disappears and RQ1's primary result changes silently.
+⚠️ `TODO(verify)` — the ceiling wants a civil-UAS citation; 120 m AGL is believed
+correct but no regulation text has been checked.
+
+**Floor:** a *model-validity* limit, not a flight rule. At 10 m altitude 37 % of
+positions sit inside a building box, and `occlusion.py` ignores boxes containing
+an endpoint — a convention chosen for a 1 % case — so the drone would see through
+the building it stands in. Separately `pathloss_a2g_umi_av_db` clamps `h` to
+22.5 m, silently substituting a different altitude below TR 36.777's floor.
+
+## Why altitude does not remove the need for a relay chain
+
+Both endpoints that matter are on the ground. The ground-LoS radius is
+`(W/2)·h/H_b` — 50 m at 80 m, 75 m at 120 m — so a clear ray to a ground node
+1400 m away would need **2240 m** of altitude. Climbing makes the *middle* of the
+chain cheap and leaves both *ends* exactly as hard. At 120 m, 1400 m from the MCV:
+
+| | capacity |
+|---|---|
+| single hop, **clear** ray | **46.1 Mbps** |
+| single hop, **blocked** ray | 4.8 Mbps |
+| 2-hop: A2A 1200 m + A2G 200 m | **27.6 Mbps** |
+| threshold | 5.0 Mbps |
+
+**The chain is required by blockage, not by range** — which is what makes RQ1 a
+real question rather than a formality: a connectivity-radius model would capture
+a range requirement perfectly, so there would be no gap to measure.
+
 ## Energy — implemented in [`src/env/energy.py`](../src/env/energy.py)
 ```
 P(V) = P_0·(1 + 3V²/U_tip²)                              # blade profile  ↑ with V
@@ -167,6 +228,11 @@ Two details that matter numerically:
   (~0.80). Omitting it overstates endurance by ~25 %.
 - The induced bracket is evaluated as `1/(√(1+x²)+x)`, algebraically identical to
   `√(1+x²)−x` but without the catastrophic cancellation.
+
+**Climb power** `W·v_z/η` is added on top for vertical motion — real physics,
+traceable, and cheap. It does **not** bind: a full 40 → 120 m climb at 5 m/s
+costs ~0.55 % of a 548 Wh pack, which is why the altitude band rather than the
+energy term is what controls altitude (see above).
 
 `κ‖a‖²` is an explicit **control-effort heuristic**, not physics; it defaults to
 zero and must be opted into. `P_tx_DC` is a **constant** (Ptx is fixed), ~7 W or

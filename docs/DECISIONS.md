@@ -57,12 +57,35 @@ swarm redundant. It was a mechanism invented to fix cue staleness with a
 justification attached afterwards. **The correct fix was geometric** — start the
 HVT 300–500 m away so transit is short enough that one cue survives it.
 
-### Blind search for the HVT
-Rejected as a *starting* condition. Exploration is RL's weakest point and a
-sparse "found it" reward over 1500 m² would swamp the learning signal. The cue
-exists to break directional symmetry, not to solve acquisition — difficulty comes
-from street topology and from the target moving during transit. Legitimate as an
-optional final curriculum stage, once tracking already works.
+### Blind search for the HVT — ⚠️ the stated reason was wrong; the conclusion stands for a different reason
+This entry used to read: *"a sparse 'found it' reward over 1500 m² would swamp
+the learning signal."* **Measured in Block D, that is false**, and it argues
+against a scenario this project does not have. The HVT starts in a 300–500 m
+annulus the drones launch *inside*, and the sensor reaches 830 m. Five drones on
+a radial fan over 512 real routes
+([`../scripts/measure_envelope.py`](../scripts/measure_envelope.py)):
+
+| strategy | ever found | t50 | t90 |
+|---|---|---|---|
+| **no cue**, 5-way fan | **100 %** | **8 s** | 22 s |
+| cue σ=150 m, narrow fan | 99.8 % | 10 s | 22 s |
+| no cue, all five on one bearing | 59.0 % | 13 s | 46 s |
+
+Uncued is *faster*, and the reward is never sparse — acquisition takes ~20 of 600
+steps, and the PBRS `approach` potential is dense throughout regardless.
+
+**The cue survives on a narrower argument.** What the third row shows is that
+what matters is **spreading out**, not knowing the direction — and spreading
+requires homogeneous agents to break symmetry off the neighbour channel. That is
+a coordination problem no RQ asks about, sitting in Block G, the acknowledged
+place projects of this shape stall. The cue buys that risk away for 3 observation
+dims. It is variance reduction on a phase that is not the subject of study, not a
+fix for exploration.
+
+Two consequences: the no-cue condition becomes a **cheap ablation rather than an
+optional final curriculum stage**, and the result leans on the 360° sensor
+assumption ([`BLOCK_D.md`](BLOCK_D.md)) — optimistic for search, not for
+tracking. Say so when reporting it.
 
 ### Manhattan (and any uniform-tall city) as the map
 Canyon ratio `H_b/W ≈ 8.3` gives a **4.8 m** across-street observation envelope —
@@ -146,12 +169,18 @@ Three measurements killed it:
    routes per quadrant gives NW's 15 spots 34 routes each — **1.9× more**
    repetition than now — on the smallest and most geometrically peculiar subset,
    while SW drops to 10.7. That trades a weak concern for a stronger one.
-3. **The actor cannot see which quadrant it is in.** The 21 ego features contain
+3. **The actor cannot see which quadrant it is in.** The 24 ego features contain
    no absolute position except own altitude ([`ENVIRONMENT.md`](ENVIRONMENT.md) →
    Observations). Everything else is relative or local sensing, so "the MCV is
    usually south-west" is not representable. The only residual channel is the
    pattern of clearance margins — and a policy responding to local building
    geometry is doing the right thing, not cheating.
+
+   > Re-checked when Block D added the 3-dim cue vector. It does not break this:
+   > the cue is relative to the drone's own position and its location is
+   > randomised per episode, so combining it with the relative vector to the MCV
+   > yields only the *initial HVT bearing from the MCV* — still no absolute
+   > position, still no quadrant identity.
 
 The **periphery** constraint is separate and is arithmetic, not a choice: the box
 half-diagonal is 1060 m, so a centrally-parked MCV cannot reach the 1400 m the
@@ -173,6 +202,99 @@ below 78 %. Frankfurt has no single dominant street orientation — part
 orientations run 22–74° interquartile — so any global rotation that helps one
 district hurts another. Dead.
 
+### An unbounded (or high) altitude ceiling
+Nothing in the model charges for altitude — `energy.propulsion_power_w` is a
+function of speed only, and a full 150 m climb costs 0.55 % of the pack. Both
+physical effects then point straight up, so **the ceiling is the entire altitude
+policy** and `a_z` will saturate there. Measured
+([`../scripts/measure_envelope.py`](../scripts/measure_envelope.py)):
+
+| altitude | A2A links blocked | HVT visible at 100–200 m offset |
+|---|---|---|
+| 80 m | 31.2 % | 38.2 % |
+| **120 m** | **24.6 %** | **48.1 %** |
+| 180 m | 10.2 % | 55.9 % |
+| 230 m | **0.0 %** | — |
+
+Above ~180 m the tower cluster stops blocking anything, F1's A2A component
+disappears, and RQ1's primary result changes **silently**. Band fixed at
+**40–120 m**.
+
+The floor is a *model-validity* limit, not a flight rule: at 10 m altitude 37 %
+of positions sit inside a building box, where `occlusion.py`'s
+`ignore_endpoint_boxes` convention — chosen for a 1 % case — lets a drone see
+through the building it is standing in; and `pathloss_a2g_umi_av_db` clamps `h`
+to 22.5 m, silently substituting a different altitude. At 40 m containment is
+3.3 %.
+
+Rejected alongside: **an altitude energy penalty**. Physically correct to add
+(`W·v_z/η`, and it is being added), but it cannot bind — the climb is a one-off
+0.55 % of the battery. Only the ceiling controls this.
+
+### mmWave instead of 3.5 GHz
+Raised as a way to make blockage matter more. It would do the opposite of what
+the thesis needs:
+
+- **RQ1 becomes trivial.** mmWave is textbook blockage-limited; "occlusion
+  matters at 28 GHz" is a lecture slide, not a finding. The result is interesting
+  at sub-6 *because* the radius abstraction might plausibly have been safe.
+- **Wrong radio for the platform.** Ptx = 30 dBm is justified from real tactical
+  UAV MANET radios (Silvus, Doodle Labs, TrellisWare), all sub-6. mmWave is
+  *less* realistic here, not more.
+- **Different project.** At 28 GHz, FSPL at 1400 m is ~18 dB worse than at
+  3.5 GHz, so nothing closes without beamforming array gain — which means
+  modelling arrays and beam pointing, and beam alignment couples to the motion
+  policy. There is also no aerial mmWave model with TR 36.777's standing.
+- **Calendar.** It invalidates Block A's 103 tests, `PHYSICS.md`, the scenario
+  sizing and Chapter 3 — which is writable *now* — before a freeze whose purpose
+  is preventing exactly this.
+
+Belongs in Chapter 7, where it strengthens the discussion for free: *if occlusion
+dominates at 3.5 GHz, where diffraction still partly rescues blocked links, the
+abstraction must be even less safe at mmWave* — a testable prediction.
+
+### A minimum sensor depression angle
+Would make the no-cue ablation airtight rather than caveated, and is cheap to
+compute. Rejected: it fixes one unsourced constant (the 830 m range) by adding a
+second, and a *binding* sensor parameter is precisely what
+[`BLOCK_B.md`](BLOCK_B.md) identifies as confounding RQ1's fidelity ladder with
+sensor specification. If that ablation ever needs hardening, run it as a
+**sensitivity analysis** over two or three angles — stronger evidence than any
+asserted value, and the same move `routing.py` already makes with `reuse_limit`.
+
+A fixed downward camera cone is rejected separately: it models the wrong hardware
+(the payload is gimballed) and duplicates the roofline-clearance constraint.
+
+### A time / remaining-horizon feature in the observation
+Proposed to fix value aliasing under the fixed 600-step truncation. Rejected
+after separating the two cases Pardo et al. (2018) distinguish: time-awareness is
+required for *time-limited* tasks, where the horizon is part of the problem, but
+this mission is *time-unlimited* — 240 s covers the hop escalation, nothing about
+the mission ends there. The correct treatment is partial-episode bootstrapping,
+which Block A already chose (`reward.shaping`: *"truncation is not terminal —
+bootstrap the value there instead"*). Observing the clock would let the policy
+condition on an artificial horizon.
+
+What replaces it is a **requirement on the wrapper**: keep `terminated` and
+`truncated` distinct and bootstrap at truncation. Wrappers routinely collapse the
+two, so Block D asserts it in the skrl smoke test.
+
+### "1000 steps/s" as batched calls per second
+Not a design direction so much as an ambiguity that had to be killed. The repo
+stated the gate in two units differing by 1000×: `bench_occlusion.py` and
+[`BLOCK_C.md`](BLOCK_C.md) print batched calls/s, while
+[`THESIS_PLAN.md`](THESIS_PLAN.md) §3's budget is written in transitions
+(10 M ÷ 1000/s ≈ 2.8 h/run × 45 ≈ 120 GPU-h). **The transition reading wins** —
+it is the one the affordability argument is made in, and 10 M batched steps at
+`num_envs = 1024` would be 10.2 billion samples per run, which nobody budgeted.
+
+Consequence to accept: the 1000/s floor then clears even in eager mode
+(1.8 × 1024 = 1843 env-steps/s), so the reported number becomes **wall-clock per
+10 M-step run, end-to-end including the learner**. `torch.compile` stays
+mandatory regardless — 73× applies to the 300–500 GPU-hours of development, and
+unfused the slab chain holds ~8.8 GB of live intermediates that compete with the
+learner for VRAM.
+
 ### `SAGEConv` for the GNN rung
 ☠️ **Never.** It cannot ingest edge features at all, so it would silently collapse
 the GNN rung into the DeepSets rung and leave RQ2 measuring nothing — and it is
@@ -191,3 +313,5 @@ the layer people reach for by default.
 | MCV spawn diversity — **investigated, no action** | see below |
 | Why one route lingered 333 steps (133 s) on a ~240 m bridge | unexplained. At the capped speed that is ~5× too long, so `grow_outward` may oscillate where the graph is sparse or near-dead-ended. Harmless now (the bridge decks are gone, worst route is 29 steps) but it hints the outward walk can stall. Look with `scripts/view_episode.py` before trusting route *timing* — the escalation profile is calibrated on medians and would hide a few stalled routes |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |
+| **The 120 m altitude ceiling's citation** | same standing. The band is fixed on measurement (above), but the ceiling wants an external basis the way Ptx and bandwidth have one. The civil UAS operating limit is the natural source and is *believed* to be 120 m AGL — **no regulation text has been read for this repo.** `TODO(verify)` |
+| Does the solo drone actually fail on the real map? | `scenario_design.py` uses an analytic canyon rule (ground LoS within 0.625×altitude) that is **more conservative than the measured geometry** — 0 % where the map gives 48 % visibility at 100–200 m offset from 120 m. The "one drone cannot do the mission" premise (W1) therefore rests on a proxy. Block D re-runs it on real geometry; if the solo drone succeeds materially more than a few percent, the box or the escalation needs revisiting **before the March freeze** |

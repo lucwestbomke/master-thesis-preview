@@ -46,6 +46,45 @@ def sync(dev: str) -> None:
         torch.mps.synchronize()
 
 
+def parity_check(compiled, boxes, heights, dev: str, chunk: int, tol: float = 1e-2) -> bool:
+    """Do the compiled and CUDA paths still compute the right answer?
+
+    A throughput number is worthless if the kernel it timed is wrong, and the two
+    ways that happens here are invisible in a benchmark: `torch.compile` reorders
+    the slab chain (the +/-inf sentinels are the fragile part), and no test in
+    this repo has ever exercised CUDA -- they all run on the default device.
+    Deviations should be fp32 rounding, ~1e-5 m; a mishandled sentinel shows up
+    as ~1e4, so `tol` is deliberately loose and still catches it.
+    """
+    torch.manual_seed(0)
+    pos = torch.empty(16, K_NODES, 3, device=dev)
+    pos[..., 0].uniform_(-700, 700)
+    pos[..., 1].uniform_(-700, 700)
+    pos[..., 2].uniform_(1.5, 120.0)
+
+    ref = pairwise_clearance(pos, boxes, heights, chunk=chunk)
+    ok = True
+
+    if dev != "cpu":
+        on_cpu = pairwise_clearance(pos.cpu(), boxes.cpu(), heights.cpu(), chunk=chunk)
+        delta = (ref.cpu() - on_cpu).abs().max().item()
+        ok &= delta <= tol
+        print(
+            f"parity  {dev} vs cpu      max |delta| = {delta:.2e} m  {'ok' if delta <= tol else 'FAIL'}"
+        )
+
+    if compiled is not None:
+        delta = (compiled(pos, boxes, heights, chunk=chunk) - ref).abs().max().item()
+        ok &= delta <= tol
+        print(
+            f"parity  compiled vs eager max |delta| = {delta:.2e} m  {'ok' if delta <= tol else 'FAIL'}"
+        )
+
+    if not ok:
+        print("\n*** PARITY FAILED -- the numbers below are meaningless. Do not report them.")
+    return ok
+
+
 def bench(fn, dev: str, n: int = 5) -> float:
     for _ in range(3):
         fn()
@@ -81,6 +120,9 @@ def main() -> None:
             compiled = torch.compile(pairwise_clearance, dynamic=False)
         except Exception as exc:  # noqa: BLE001 - compile is an optimisation
             print(f"[warn] torch.compile unavailable: {exc}")
+
+    parity_check(compiled, boxes, heights, dev, args.chunk)
+    print()
 
     header = f"{'num_envs':>9}{'tests/step':>13}{'eager st/s':>12}"
     if compiled is not None:

@@ -80,16 +80,16 @@ only the methodology chapter.
 ## Blocks
 
 Each gets a full spec when it becomes *next* — written just-in-time, because a
-spec written six months early goes stale. **Block D has no spec yet; write one
-before starting.** [`BLOCK_B.md`](BLOCK_B.md) and [`BLOCK_C.md`](BLOCK_C.md) are
-kept as the record of what was measured and decided.
+spec written six months early goes stale. [`BLOCK_B.md`](BLOCK_B.md),
+[`BLOCK_C.md`](BLOCK_C.md) and [`BLOCK_D.md`](BLOCK_D.md) are the record of what
+was measured and decided.
 
 | Block | Delivers | Serves | Gate | Fails if |
 |---|---|---|---|---|
 | **A** ✅ | channel, routing, energy, reward — pure, batched, tested | all | 103 tests, hand-computed | — |
 | **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
 | **C** ✅ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry ✅ | too slow → blows D's throughput gate. Fusion via `torch.compile` is what makes it viable |
-| **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** | below gate → 45 runs unaffordable, matrix must shrink |
+| **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** (transitions, not batched calls) and **≤3 h per 10 M-step run end-to-end** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
 | **F** | F0–F4 as config flags on one env | **RQ1 directly** | all five run; `R` calibrated under F4 | uncalibrated `R` → RQ1 comparison is meaningless |
 | **G** | MAPPO + curriculum | everything | one toy run beats random | nothing learns → the usual place projects stall |
@@ -151,10 +151,16 @@ is the single biggest scheduling win available before the March 2027 freeze.
 
 ## Two things that decide whether this works
 
-**D's throughput gate.** At ≥1000 steps/s the 45-run matrix costs ~120 GPU-hours
-and everything in `THESIS_PLAN.md` §3 is affordable. Below it, the matrix has to
-shrink and RQ2 is the first thing cut. Measure it before building on top of the
-env — not after.
+**D's throughput gate.** At ≥1000 **env-steps/s** — one environment advancing one
+tick, summed over the batch, *not* one batched call — the 45-run matrix costs
+~120 GPU-hours and everything in `THESIS_PLAN.md` §3 is affordable. Below it, the
+matrix has to shrink and RQ2 is the first thing cut. Measure it before building
+on top of the env — not after.
+
+The unit was ambiguous in this repo and is now settled in
+[`BLOCK_D.md`](BLOCK_D.md). Under it the floor clears easily, so the number
+actually reported is **wall-clock for a 10 M-step run end-to-end including the
+learner, target ≤3 h**. `torch.compile` is mandatory regardless.
 
 **G's curriculum.** Getting MAPPO to learn anything at all is the classic failure
 point for projects of this shape. Budget real calendar time, and remember the
