@@ -443,7 +443,7 @@ reading:
 | | Built | Benchmarked | Decision it informs |
 |---|---|---|---|
 | **D−1** ✅ | **nothing — this came first** | `bench_occlusion.py` + suite on the rented CUDA GPU, 2026-08-12 | **done: gate met, ~3170× margin.** See above |
-| **D0** | kinematics + occlusion + channel + routing on random state. No obs, no reward, no reset. | first `bench_env.py` run | is the floor plan viable, and at which `num_envs` |
+| **D0** ✅ | kinematics + occlusion + channel + routing. No obs, no reward, no auto-reset. | first `bench_env.py` run | **done — the profile did not invert.** See below |
 | **D1** | + reward, observations, auto-reset, curriculum | re-run; expect **≤2×** D0 | did the scaffolding add a second bottleneck |
 | **D2** | + PettingZoo adapter | API compliance only | — |
 | **D2.5** | + custom skrl multi-agent wrapper, **smoke only** | end-to-end env+learner throughput | does skrl accept this observation contract, and does it bootstrap at truncation |
@@ -491,6 +491,37 @@ against a decision that would otherwise cost weeks of broad-phase work.
 Record the full provenance next to the numbers: GPU model, driver, CUDA version,
 PyTorch version, Triton version. Throughput figures without them are not
 reproducible, and they are going in the thesis.
+
+### ✅ D0 result — the profile held
+
+`src/env/core.py` + `scripts/bench_env.py`, Apple MPS (a lower bound; CUDA
+re-run pending at D3):
+
+| | |
+|---|---|
+| compiled full physics step, `num_envs=1024`, N=5 | 7.94 ms → **129 k env-steps/s**, 129× the gate |
+| occlusion alone on the same machine (`bench_occlusion.py`) | 130 calls/s vs the step's 126 calls/s |
+| **cost the rest of the physics adds over occlusion** | **~3 %** |
+
+Per-stage, eager, at `num_envs=1024`:
+
+| stage | ms | share |
+|---|---|---|
+| **occlusion** | 526.5 | **99.7 %** |
+| routing DP (incl. path extraction) | 0.78 | 0.1 % |
+| kinematics | 0.44 | 0.1 % |
+| channel | 0.35 | 0.1 % |
+| HVT route lookup | 0.08 | 0.0 % |
+
+**The "~99 % is occlusion" assumption survives contact with a real step**, and
+the new batched path extraction costs 0.78 ms eager — nothing. Fusion is 67× on
+the whole step, same order as on occlusion alone, so nothing in the scaffolding
+blocks the compiler.
+
+⚠️ The per-stage shares are of the **eager** total. `torch.compile` fuses across
+stage boundaries, so eager stage times do not sum to the compiled step and the
+two columns must never be mixed — `bench_env.py` prints them separately for
+exactly this reason.
 
 If D1 is much worse than 2× D0, the cause is a graph break or a host sync, not
 arithmetic — find it before adding anything else.

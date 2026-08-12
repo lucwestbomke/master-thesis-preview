@@ -11,10 +11,12 @@ import torch
 
 from .energy import (
     DEFAULT_AIRFRAME,
+    GRAVITY,
     PA_EFFICIENCY,
     RADIO_CIRCUIT_W,
     Rotorcraft,
     battery_fraction_used,
+    climb_power_w,
     electrical_power_w,
     endurance_s,
     hover_power_w,
@@ -236,3 +238,30 @@ def test_matches_the_closed_form_termwise():
     parasite = 0.5 * C.fuselage_drag_ratio * C.air_density * C.solidity * C.disc_area_m2 * v**3
     expected = profile + induced + parasite
     assert propulsion_power_w(torch.tensor(v), C).item() == pytest.approx(expected, rel=1e-5)
+
+
+def test_climb_power_is_potential_energy_over_efficiency():
+    craft = DEFAULT_AIRFRAME
+    v_z = torch.tensor([0.0, 1.0, 5.0])
+    got = climb_power_w(v_z, craft)
+    expect = craft.mass_kg * GRAVITY * v_z / craft.drivetrain_efficiency
+    assert torch.allclose(got, expect, rtol=1e-6)
+
+
+def test_descending_is_not_charged_and_is_not_regenerative():
+    """A multirotor windmills on descent; it neither pays nor recovers here."""
+    assert torch.all(climb_power_w(torch.tensor([-1.0, -8.0])) == 0.0)
+
+
+def test_a_full_climb_does_not_meaningfully_dent_the_battery():
+    """The measurement behind BLOCK_D.md's altitude decision.
+
+    If this ever exceeds a few percent, the altitude band stops being the only
+    thing governing how high the swarm flies and the reasoning there must be
+    revisited.
+    """
+    v_z, band_m = 5.0, 120.0 - 40.0
+    seconds = band_m / v_z
+    joules = climb_power_w(torch.tensor(v_z)).item() * seconds
+    fraction = joules / (548.0 * 3600.0)
+    assert fraction < 0.01, f"climb costs {fraction:.1%} of the pack, not negligible"

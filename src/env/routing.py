@@ -126,6 +126,83 @@ def best_relay_capacity(
     return torch.where(no_source, torch.zeros_like(best), best)
 
 
+def best_relay_path(
+    cap_mbps: torch.Tensor,
+    source_mask: torch.Tensor,
+    dst_index: int,
+    max_hops: int,
+    reuse_limit: int = 3,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`best_relay_capacity`, plus *which* nodes carry the chain.
+
+    Same DP, with back-pointers. Two things downstream need the membership and
+    cannot get it from the capacity alone:
+
+    - the ego observation "on active relay path" (`docs/ENVIRONMENT.md`);
+    - the failure-attribution metric "fraction of steps where the intended chain
+      passes through an occluded link" (`docs/THESIS_PLAN.md` §4), which is the
+      direct signature of a radius-trained policy and so is RQ1's most
+      load-bearing diagnostic.
+
+    Returns
+    -------
+    capacity  : (B,)      identical to `best_relay_capacity`
+    on_path   : (B, M)    bool, nodes carrying the winning chain (incl. `dst`)
+    hop_count : (B,)      long, hops in the winning chain; 0 when there is none
+
+    Fully batched: the back-walk is `max_hops` gathers, not a Python loop over
+    environments. No `.item()` anywhere -- this runs inside `step()`.
+    """
+    b, m, _ = cap_mbps.shape
+    dev = cap_mbps.device
+    eye = torch.eye(m, device=dev, dtype=cap_mbps.dtype)
+    cap = cap_mbps * (1.0 - eye)
+
+    valid_src = source_mask.clone()
+    valid_src[:, dst_index] = False
+    src = valid_src.to(cap.dtype) * _SOURCE_SENTINEL
+
+    frontier = src.clone()
+    best = torch.zeros(b, device=dev, dtype=cap.dtype)
+    best_hops = torch.zeros(b, device=dev, dtype=torch.long)
+    parents: list[torch.Tensor] = []
+
+    for hops in range(1, max_hops + 1):
+        widened, arg = torch.minimum(frontier.unsqueeze(-1), cap).max(dim=1)  # (B, M)
+        # A source restarting the chain at j beats any predecessor, and then j
+        # has no parent -- -1 terminates the back-walk.
+        restart = src > widened
+        frontier = torch.maximum(widened, src)
+        parents.append(torch.where(restart, torch.full_like(arg, -1), arg))
+
+        scored = frontier[:, dst_index] / float(min(hops, reuse_limit))
+        improved = scored > best
+        best = torch.where(improved, scored, best)
+        best_hops = torch.where(improved, torch.full_like(best_hops, hops), best_hops)
+
+    no_source = ~valid_src.any(dim=-1)
+    best = torch.where(no_source, torch.zeros_like(best), best)
+    best_hops = torch.where(no_source, torch.zeros_like(best_hops), best_hops)
+
+    # Walk the winning chain back from dst. Level h is only stepped by the
+    # environments whose winning chain is at least h hops long, so one pass from
+    # max_hops down to 1 serves every environment at once.
+    on_path = torch.zeros(b, m, dtype=torch.bool, device=dev)
+    node = torch.full((b,), dst_index, dtype=torch.long, device=dev)
+    alive = best_hops > 0
+    on_path[:, dst_index] = alive
+
+    for hops in range(max_hops, 0, -1):
+        par = parents[hops - 1].gather(1, node.unsqueeze(1)).squeeze(1)
+        step = alive & (best_hops >= hops) & (par >= 0)
+        node = torch.where(step, par, node)
+        on_path |= step.unsqueeze(1) & (
+            torch.arange(m, device=dev).unsqueeze(0) == node.unsqueeze(1)
+        )
+
+    return best, on_path, best_hops
+
+
 def link_alive(capacity: torch.Tensor, threshold_mbps: float) -> torch.Tensor:
     """Discrete mission-success test on the end-to-end rate."""
     return capacity >= threshold_mbps

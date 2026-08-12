@@ -146,6 +146,25 @@ def electrical_power_w(shaft_power_w: torch.Tensor, craft: Rotorcraft) -> torch.
     return shaft_power_w / craft.drivetrain_efficiency
 
 
+def climb_power_w(
+    vertical_speed_ms: torch.Tensor, craft: Rotorcraft = DEFAULT_AIRFRAME
+) -> torch.Tensor:
+    """Extra electrical draw while climbing: `W * v_z / eta`.
+
+    Rate of change of potential energy, divided by drivetrain efficiency. Only
+    the ascending half is charged -- a descent recovers nothing on a multirotor,
+    which windmills rather than regenerating.
+
+    Added because nothing else in the model charges for altitude
+    (`propulsion_power_w` is a function of horizontal speed only), which made
+    altitude a free good. It is physically right and traceable, but it does
+    **not** bind: a full 40 -> 120 m climb at 5 m/s costs ~0.55 % of a 548 Wh
+    pack, so the altitude band -- not this term -- is what governs how high the
+    swarm flies. See docs/BLOCK_D.md.
+    """
+    return craft.weight_n * vertical_speed_ms.clamp_min(0.0) / craft.drivetrain_efficiency
+
+
 def radio_dc_power_w(ptx_dbm: float = 30.0) -> float:
     """Constant: Ptx is not an action. ~4 W of PA plus the always-on front end."""
     return (10.0 ** (ptx_dbm / 10.0) / 1000.0) / PA_EFFICIENCY + RADIO_CIRCUIT_W

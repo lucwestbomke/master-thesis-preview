@@ -6,7 +6,7 @@ the MCV (the destination).
 import pytest
 import torch
 
-from .routing import best_relay_capacity, link_alive
+from .routing import best_relay_capacity, best_relay_path, link_alive
 
 
 def _chain(caps: dict, m: int = 3, b: int = 1) -> torch.Tensor:
@@ -155,3 +155,94 @@ def test_scales_to_full_swarm_shape():
     assert got.shape == (b,)
     assert torch.isfinite(got).all()
     assert torch.all(got >= 0.0) and torch.all(got <= 40.0)
+
+
+# --------------------------------------------------------------------------- #
+# Path extraction -- who actually carries the chain
+# --------------------------------------------------------------------------- #
+
+
+def test_path_capacity_matches_the_capacity_only_dp():
+    """The property that matters: adding back-pointers must not change the answer.
+
+    Random dense graphs, so this covers far more topologies than the hand-built
+    fixtures above. If these two ever disagree, the DP and the observation are
+    describing different chains.
+    """
+    torch.manual_seed(0)
+    for m in (3, 6, 9):
+        cap = torch.rand(64, m, m) * 40.0
+        src = torch.rand(64, m) < 0.4
+        cap_only = best_relay_capacity(cap, src, dst_index=m - 1, max_hops=m - 1)
+        cap_path, _, _ = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
+        assert torch.allclose(cap_only, cap_path, atol=1e-5)
+
+
+def test_path_membership_reproduces_the_reported_capacity():
+    """Walk the returned chain by hand and recompute min(C_i)/min(n,3)."""
+    # 0 -> 1 -> 3 is the only route to the MCV; 2 is a decoy with no link out.
+    cap = _chain({(0, 1): 30.0, (1, 3): 12.0, (0, 2): 99.0}, m=4)
+    src = torch.tensor([[True, False, False, False]])
+    capacity, on_path, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
+
+    assert hops.item() == 2
+    assert on_path.tolist() == [[True, True, False, True]]
+    assert capacity.item() == pytest.approx(min(30.0, 12.0) / 2, abs=1e-4)
+
+
+def test_single_hop_path_is_source_plus_destination():
+    cap = _chain({(0, 2): 20.0}, m=3)
+    src = torch.tensor([[True, False, False]])
+    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=3)
+    assert hops.item() == 1
+    assert on_path.tolist() == [[True, False, True]]
+    assert capacity.item() == pytest.approx(20.0, abs=1e-4)
+
+
+def test_no_observer_means_no_path():
+    """No source is a mission failure, not a routing failure -- and it must not
+    leave a phantom chain in the observation."""
+    cap = _chain({(0, 1): 30.0, (1, 2): 30.0})
+    src = torch.zeros(1, 3, dtype=torch.bool)
+    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
+    assert capacity.item() == 0.0
+    assert hops.item() == 0
+    assert not on_path.any()
+
+
+def test_disconnected_destination_yields_no_path():
+    cap = _chain({(0, 1): 30.0}, m=3)  # nothing reaches node 2
+    src = torch.tensor([[True, False, False]])
+    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
+    assert capacity.item() == 0.0
+    assert hops.item() == 0
+    assert not on_path.any()
+
+
+def test_path_is_independent_across_the_batch():
+    """Two environments with different answers must not contaminate each other --
+    the back-walk indexes per-env, and a reduction bug here is invisible."""
+    a = _chain({(0, 1): 30.0, (1, 3): 12.0}, m=4)
+    b = _chain({(0, 3): 8.0}, m=4)
+    cap = torch.cat([a, b], dim=0)
+    src = torch.tensor([[True, False, False, False], [True, False, False, False]])
+    capacity, on_path, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
+
+    assert hops.tolist() == [2, 1]
+    assert on_path.tolist() == [
+        [True, True, False, True],
+        [True, False, False, True],
+    ]
+    assert capacity[0].item() == pytest.approx(6.0, abs=1e-4)
+    assert capacity[1].item() == pytest.approx(8.0, abs=1e-4)
+
+
+def test_path_never_reports_more_hops_than_nodes_on_it():
+    """A back-walk that loops would mark fewer nodes than it claims hops."""
+    torch.manual_seed(1)
+    m = 7
+    cap = torch.rand(128, m, m) * 40.0
+    src = torch.rand(128, m) < 0.3
+    _, on_path, hops = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
+    # a chain of n hops touches n+1 distinct nodes, destination included
+    assert torch.all(on_path.sum(dim=-1) == torch.where(hops > 0, hops + 1, hops))
