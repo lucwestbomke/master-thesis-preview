@@ -444,7 +444,7 @@ reading:
 |---|---|---|---|
 | **D−1** ✅ | **nothing — this came first** | `bench_occlusion.py` + suite on the rented CUDA GPU, 2026-08-12 | **done: gate met, ~3170× margin.** See above |
 | **D0** ✅ | kinematics + occlusion + channel + routing. No obs, no reward, no auto-reset. | first `bench_env.py` run | **done — the profile did not invert.** See below |
-| **D1** | + reward, observations, auto-reset, curriculum | re-run; expect **≤2×** D0 | did the scaffolding add a second bottleneck |
+| **D1** ✅ | + reward, observations, auto-reset, curriculum | re-run; expect **≤2×** D0 | **done — 2.4× D0, all of it accounted for.** See below |
 | **D2** | + PettingZoo adapter | API compliance only | — |
 | **D2.5** | + custom skrl multi-agent wrapper, **smoke only** | end-to-end env+learner throughput | does skrl accept this observation contract, and does it bootstrap at truncation |
 | **D3** | — | **re-run everything on the rented CUDA GPU** | **the verdict** |
@@ -522,6 +522,73 @@ blocks the compiler.
 stage boundaries, so eager stage times do not sum to the compiled step and the
 two columns must never be mixed — `bench_env.py` prints them separately for
 exactly this reason.
+
+### ✅ D1 result — full env, and what compiling it actually allows
+
+`num_envs=1024`, N=5, MPS (a lower bound; CUDA re-run pending at D3):
+
+| | ms/call | env-steps/s | 10 M-step run |
+|---|---|---|---|
+| D0, physics only | 7.94 | 129 k | 1.3 min |
+| **D1, full step** | **19.25** | **53 k** | **3.1 min** |
+
+2.4× D0, and all of it is accounted for: **`step()` evaluates the physics twice
+by design** — once for the transition, once after auto-reset — which is ~2×, and
+observations + reward + episode sampling add the remaining 0.4×. Per stage, for
+one evaluate pass (occlusion compiled, rest eager):
+
+| stage | ms | share |
+|---|---|---|
+| **occlusion** | 7.67 | **70.8 %** |
+| routing DP + path | 0.83 | 7.6 % |
+| observations | 0.64 | 6.0 % |
+| kinematics | 0.50 | 4.6 % |
+| channel | 0.37 | 3.4 % |
+| episode sampling | 0.37 | 3.4 % |
+| reward | 0.34 | 3.2 % |
+
+**The profile has not inverted.** Occlusion is still 71 % of a pass *even
+compiled*; eager it is 99.7 %. The whole D1 scaffolding is 12.6 %.
+
+⚠️ **Only the occlusion kernel is compiled, not `step()`.** Two independent
+blockers, both found at D1 and both needing a CUDA re-check:
+
+1. `fullgraph=True` over `step()` fails — dynamo cannot proxy the
+   `torch.Generator` that `_sample_episode` draws from. Dropping the generator
+   for the global RNG would fix it but costs per-seed reproducibility, which is
+   worth more than fusing stages that are 3 % of the cost.
+2. Inductor's **Metal** backend then fails to codegen the step at all
+   (`float64 cast requested`; MPS has no fp64). CPU Inductor compiles it fine
+   with `fullgraph=False`, so the graph itself is sound and this is a backend
+   limit. CUDA/Triton is a third backend and is untested.
+
+Since occlusion is ~99.7 % of eager cost, compiling it alone captures
+essentially all the available speedup, and that form is already proven to fuse
+on CPU, MPS and CUDA by `bench_occlusion.py`.
+
+### What a scripted policy shows at D1
+
+64 episodes, drones strung along the MCV→HVT line at 100 m:
+
+| | |
+|---|---|
+| mission-capable steps | 45.8 % (p10 21 %, p90 70 %) |
+| HVT observed steps | **45.8 % — identical** |
+| chain crosses an occluded link | **18.5 %** |
+| hop share | 0-hop 54 %, 1-hop 18 %, 2-hop 22 %, 3-hop **3.2 %**, 4-hop 3.3 % |
+| battery used over 239.6 s | 6.7 % (hovering: 7.03 %, vs PHYSICS.md's ~7 %) |
+
+Three things to carry forward:
+
+- **Mission-capable and observed are still identical**, as at D0. Whenever the
+  target is seen the link clears 5 Mbps, so under this policy observation binds
+  and the link never does. If that survives learned policies, RQ1's ladder
+  discriminates mainly through sensor-ray occlusion rather than link physics.
+- **`chain_occluded` is live and discriminating at 18.5 %** — a geometry-blind
+  policy routing straight through buildings is exactly the signature RQ1
+  predicts, and the metric now exists to measure it.
+- **3-hop chains remain rare (3.2 %).** Second independent look at BLOCK_B's
+  under-exercised-escalation worry; still to be settled against B0 in Block E.
 
 If D1 is much worse than 2× D0, the cause is a graph break or a host sync, not
 arithmetic — find it before adding anything else.
@@ -653,14 +720,15 @@ scripted policy through it. Five questions, all of which decide something:
 - [ ] Tests parameterised over device, so `pytest` on a GPU box tests the GPU
 - [ ] Gate units written into [`AGENTS.md`](../AGENTS.md) so they cannot be
       re-opened; both reported by `bench_env.py`
-- [ ] `src/env/core.py`: batched, pure-tensor `step()`; no `.item()`/`.cpu()`/
+- [x] `src/env/core.py`: batched, pure-tensor `step()`; no `.item()`/`.cpu()`/
       `.numpy()`; no Python loop over environments
-- [ ] `routing.py` extended with batched path extraction; tests updated
-- [ ] Altitude band enforced at 40–120 m; climb power in `energy.py`; ceiling
-      citation resolved or still carried as `TODO(verify)`
-- [ ] Ego observation at 24 dims with the persistent cue; `flat` packing at 108;
-      `swarm_env.py`'s `OBS_DIM` updated
-- [ ] Curriculum axes as per-env tensors; `ENVIRONMENT.md`'s stage table amended
+- [x] `routing.py` extended with batched path extraction (nodes **and** edges,
+      the latter for RQ1's chain-occlusion metric); 25 tests
+- [x] Altitude band enforced at 40–120 m; climb power in `energy.py`; ceiling
+      citation **still `TODO(verify)`**
+- [x] Ego observation at 24 dims with the persistent cue; `flat` packing at 108
+      — `swarm_env.py`'s `OBS_DIM` still to update when the adapter is rewritten
+- [x] Curriculum axes as per-env tensors; `ENVIRONMENT.md`'s stage table amended
       for `CONGESTION_FACTOR`
 - [ ] `swarm_env.py` rewritten over the core; `parallel_api_test` passes; adapter
       reproduces the core at `num_envs=1`

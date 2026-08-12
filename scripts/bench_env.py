@@ -1,6 +1,10 @@
 """Block D throughput: how fast does the whole env step, and where does it go?
 
 `AGENTS.md` requires this measured before anything is built on top of the env.
+Note `step()` evaluates the physics TWICE -- once for the transition and once
+after auto-reset, which is what supplies both the returned observation and Phi of
+the fresh state (see `core.py`). So expect roughly half the throughput of the D0
+physics-only figure, by design.
 The gate itself was already cleared by occlusion alone on CUDA
 (`docs/BLOCK_C.md`), so the question this script answers is no longer "does it
 pass" but **"has the profile inverted?"** -- occlusion is 0.32 ms on a 5090, so
@@ -31,8 +35,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.env import channel, routing
-from src.env.core import BANDWIDTH_HZ, BatchedSwarmEnv, EnvConfig
+from src.env import routing
+from src.env.core import BatchedSwarmEnv, EnvConfig
+from src.env.reward import reward
 
 GATE_ENV_STEPS_PER_S = 1000.0
 RUN_STEPS = 10_000_000  # one reported training run, THESIS_PLAN §3
@@ -77,20 +82,23 @@ def bench(fn, dev: str, n: int = 10, warmup: int = 3) -> float:
 def stage_breakdown(
     env: BatchedSwarmEnv, actions: torch.Tensor, dev: str
 ) -> list[tuple[str, float]]:
-    """Cost of each stage in isolation, eager.
+    """Cost of each stage in isolation, for ONE evaluate pass.
 
-    Only meaningful eager: `torch.compile` fuses across stage boundaries, so a
-    compiled breakdown would not sum to the compiled total. Read this to find
-    *which* stage grew, then trust the end-to-end number for the total.
+    Occlusion runs compiled (as the env configures it); everything else is
+    eager, which is how they run in production too. `step()` performs two
+    evaluate passes, so these sum to roughly half a step -- read the table to
+    see *which* stage grew, and the end-to-end row for the total.
     """
     cfg = env.cfg
     pos, _vel, _accel = env._advance_drones(actions)
     hvt_pos, _ = env._advance_hvt(env.t + 1)
     pos_k = torch.cat([pos, env.mcv_pos.unsqueeze(1), hvt_pos.unsqueeze(1)], dim=1)
     clearance = env._clearance(pos_k)
-    capacity = env._capacity(pos_k, clearance)
+    capacity, _ = env._capacity(pos_k, clearance)
     sees = torch.zeros(cfg.num_envs, cfg.num_drones, dtype=torch.bool, device=env.device)
     source = torch.cat([sees, torch.zeros_like(sees[:, :1])], dim=1)
+    snap, aux = env._evaluate()
+    done = torch.zeros(cfg.num_envs, dtype=torch.bool, device=env.device)
 
     return [
         ("kinematics", bench(lambda: env._advance_drones(actions), dev)),
@@ -106,10 +114,9 @@ def stage_breakdown(
                 dev,
             ),
         ),
-        (
-            "capacity fn",
-            bench(lambda: channel.capacity_mbps(torch.zeros_like(capacity), BANDWIDTH_HZ), dev),
-        ),
+        ("observations", bench(lambda: env._observe(aux), dev)),
+        ("reward", bench(lambda: reward(snap, snap, env.weights, cfg.gamma, done, env.craft), dev)),
+        ("episode sample", bench(lambda: env._sample_episode(done), dev)),
     ]
 
 
@@ -137,17 +144,22 @@ def main() -> None:
     worst = float("inf")
     for n_drones in args.drones:
         for b in args.envs:
-            cfg = EnvConfig(num_envs=b, num_drones=n_drones, device=dev, occlusion_chunk=args.chunk)
+            cfg = EnvConfig(
+                num_envs=b,
+                num_drones=n_drones,
+                device=dev,
+                occlusion_chunk=args.chunk,
+                compile_occlusion=not args.no_compile,
+            )
             env = BatchedSwarmEnv(cfg)
             env.reset()
             actions = torch.zeros(b, n_drones, 3, device=dev)
 
-            step = env.physics_step
-            if not args.no_compile:
-                try:
-                    step = torch.compile(env.physics_step, dynamic=False)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[warn] torch.compile unavailable: {exc}")
+            # Only the occlusion kernel is compiled, via the config above.
+            # Compiling the whole step is blocked by dynamo's inability to proxy
+            # a torch.Generator and, on MPS, by Metal codegen -- see
+            # core._clearance. Occlusion is 99.7 % of the cost regardless.
+            step = env.step
 
             if dev == "cuda":
                 torch.cuda.reset_peak_memory_stats()
@@ -165,14 +177,15 @@ def main() -> None:
             if args.breakdown:
                 stages = stage_breakdown(env, actions, dev)
                 eager_total = sum(s for _, s in stages)
-                print(f"\n  per-stage at num_envs={b} N={n_drones}, all EAGER.")
-                print("  Shares are of the eager total, not of the compiled step above --")
-                print("  fusion crosses stage boundaries, so the two are not comparable.")
+                print(f"\n  per-stage at num_envs={b} N={n_drones}, ONE evaluate pass.")
+                print("  Occlusion is compiled (as the env configures it); the rest is eager.")
+                print("  step() runs two passes -- transition, then post-auto-reset -- so the")
+                print("  sum below is about half the full step, by design.")
                 for name, secs in stages:
                     print(f"    {name:<14}{secs * 1e3:>9.3f} ms{secs / eager_total * 100:>8.1f} %")
                 print(
-                    f"    {'-- eager sum':<14}{eager_total * 1e3:>9.3f} ms"
-                    f"   vs compiled step {dt * 1e3:.3f} ms  ({eager_total / dt:.0f}x)"
+                    f"    {'-- one pass':<14}{eager_total * 1e3:>9.3f} ms"
+                    f"   vs full step {dt * 1e3:.3f} ms  ({dt / eager_total:.1f} passes)"
                 )
                 print()
 

@@ -174,7 +174,7 @@ def test_path_capacity_matches_the_capacity_only_dp():
         cap = torch.rand(64, m, m) * 40.0
         src = torch.rand(64, m) < 0.4
         cap_only = best_relay_capacity(cap, src, dst_index=m - 1, max_hops=m - 1)
-        cap_path, _, _ = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
+        cap_path, _, _, _ = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
         assert torch.allclose(cap_only, cap_path, atol=1e-5)
 
 
@@ -183,7 +183,7 @@ def test_path_membership_reproduces_the_reported_capacity():
     # 0 -> 1 -> 3 is the only route to the MCV; 2 is a decoy with no link out.
     cap = _chain({(0, 1): 30.0, (1, 3): 12.0, (0, 2): 99.0}, m=4)
     src = torch.tensor([[True, False, False, False]])
-    capacity, on_path, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
+    capacity, on_path, _, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
 
     assert hops.item() == 2
     assert on_path.tolist() == [[True, True, False, True]]
@@ -193,7 +193,7 @@ def test_path_membership_reproduces_the_reported_capacity():
 def test_single_hop_path_is_source_plus_destination():
     cap = _chain({(0, 2): 20.0}, m=3)
     src = torch.tensor([[True, False, False]])
-    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=3)
+    capacity, on_path, _, hops = best_relay_path(cap, src, dst_index=2, max_hops=3)
     assert hops.item() == 1
     assert on_path.tolist() == [[True, False, True]]
     assert capacity.item() == pytest.approx(20.0, abs=1e-4)
@@ -204,7 +204,7 @@ def test_no_observer_means_no_path():
     leave a phantom chain in the observation."""
     cap = _chain({(0, 1): 30.0, (1, 2): 30.0})
     src = torch.zeros(1, 3, dtype=torch.bool)
-    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
+    capacity, on_path, _, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
     assert capacity.item() == 0.0
     assert hops.item() == 0
     assert not on_path.any()
@@ -213,7 +213,7 @@ def test_no_observer_means_no_path():
 def test_disconnected_destination_yields_no_path():
     cap = _chain({(0, 1): 30.0}, m=3)  # nothing reaches node 2
     src = torch.tensor([[True, False, False]])
-    capacity, on_path, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
+    capacity, on_path, _, hops = best_relay_path(cap, src, dst_index=2, max_hops=2)
     assert capacity.item() == 0.0
     assert hops.item() == 0
     assert not on_path.any()
@@ -226,7 +226,7 @@ def test_path_is_independent_across_the_batch():
     b = _chain({(0, 3): 8.0}, m=4)
     cap = torch.cat([a, b], dim=0)
     src = torch.tensor([[True, False, False, False], [True, False, False, False]])
-    capacity, on_path, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
+    capacity, on_path, _, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
 
     assert hops.tolist() == [2, 1]
     assert on_path.tolist() == [
@@ -243,6 +243,36 @@ def test_path_never_reports_more_hops_than_nodes_on_it():
     m = 7
     cap = torch.rand(128, m, m) * 40.0
     src = torch.rand(128, m) < 0.3
-    _, on_path, hops = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
+    _, on_path, _, hops = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
     # a chain of n hops touches n+1 distinct nodes, destination included
     assert torch.all(on_path.sum(dim=-1) == torch.where(hops > 0, hops + 1, hops))
+
+
+def test_path_edges_are_the_hops_actually_used():
+    """Node membership cannot say which pairs carried the feed; edges can.
+
+    RQ1's failure attribution counts steps where the chain crosses an occluded
+    link, which is an edge property -- so this is the output that metric reads.
+    """
+    cap = _chain({(0, 1): 30.0, (1, 3): 12.0, (0, 2): 99.0}, m=4)
+    src = torch.tensor([[True, False, False, False]])
+    _, on_path, on_edge, hops = best_relay_path(cap, src, dst_index=3, max_hops=3)
+
+    assert hops.item() == 2
+    assert on_edge[0].nonzero().tolist() == [[0, 1], [1, 3]]
+    # every edge endpoint must be a node on the path, and there are `hops` edges
+    assert on_edge.sum().item() == hops.item()
+    ends = on_edge[0].any(0) | on_edge[0].any(1)
+    assert torch.equal(ends, on_path[0])
+
+
+def test_edge_count_equals_hop_count_on_random_graphs():
+    torch.manual_seed(2)
+    m = 7
+    cap = torch.rand(128, m, m) * 40.0
+    src = torch.rand(128, m) < 0.3
+    _, on_path, on_edge, hops = best_relay_path(cap, src, dst_index=m - 1, max_hops=m - 1)
+    assert torch.all(on_edge.sum(dim=(-2, -1)) == hops)
+    # edges only ever connect nodes the walk marked
+    ends = on_edge.any(-2) | on_edge.any(-1)
+    assert torch.all(ends == on_path)

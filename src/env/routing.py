@@ -132,7 +132,7 @@ def best_relay_path(
     dst_index: int,
     max_hops: int,
     reuse_limit: int = 3,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """`best_relay_capacity`, plus *which* nodes carry the chain.
 
     Same DP, with back-pointers. Two things downstream need the membership and
@@ -146,9 +146,14 @@ def best_relay_path(
 
     Returns
     -------
-    capacity  : (B,)      identical to `best_relay_capacity`
-    on_path   : (B, M)    bool, nodes carrying the winning chain (incl. `dst`)
-    hop_count : (B,)      long, hops in the winning chain; 0 when there is none
+    capacity  : (B,)       identical to `best_relay_capacity`
+    on_path   : (B, M)     bool, nodes carrying the winning chain (incl. `dst`)
+    on_edge   : (B, M, M)  bool, `[i, j]` = the chain uses hop i -> j
+    hop_count : (B,)       long, hops in the winning chain; 0 when there is none
+
+    `on_edge` is what RQ1's failure attribution needs -- "fraction of steps where
+    the intended chain passes through an occluded link" is an edge property, and
+    node membership cannot recover which pairs were actually used.
 
     Fully batched: the back-walk is `max_hops` gathers, not a Python loop over
     environments. No `.item()` anywhere -- this runs inside `step()`.
@@ -187,7 +192,9 @@ def best_relay_path(
     # Walk the winning chain back from dst. Level h is only stepped by the
     # environments whose winning chain is at least h hops long, so one pass from
     # max_hops down to 1 serves every environment at once.
+    idx = torch.arange(m, device=dev)
     on_path = torch.zeros(b, m, dtype=torch.bool, device=dev)
+    on_edge = torch.zeros(b, m, m, dtype=torch.bool, device=dev)
     node = torch.full((b,), dst_index, dtype=torch.long, device=dev)
     alive = best_hops > 0
     on_path[:, dst_index] = alive
@@ -195,12 +202,16 @@ def best_relay_path(
     for hops in range(max_hops, 0, -1):
         par = parents[hops - 1].gather(1, node.unsqueeze(1)).squeeze(1)
         step = alive & (best_hops >= hops) & (par >= 0)
-        node = torch.where(step, par, node)
-        on_path |= step.unsqueeze(1) & (
-            torch.arange(m, device=dev).unsqueeze(0) == node.unsqueeze(1)
+        # The hop par -> node, before `node` moves back to `par`.
+        on_edge |= (
+            step[:, None, None]
+            & (idx[None, :, None] == par[:, None, None])
+            & (idx[None, None, :] == node[:, None, None])
         )
+        node = torch.where(step, par, node)
+        on_path |= step.unsqueeze(1) & (idx.unsqueeze(0) == node.unsqueeze(1))
 
-    return best, on_path, best_hops
+    return best, on_path, on_edge, best_hops
 
 
 def link_alive(capacity: torch.Tensor, threshold_mbps: float) -> torch.Tensor:
