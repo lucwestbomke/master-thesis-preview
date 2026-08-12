@@ -43,11 +43,17 @@ specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_D.md`](docs/BLOCK_D.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-⚠️ **Occlusion needs `torch.compile`.** Eager, the slab chain writes ~20
-intermediates of `(links × M)` — 17.6 GB/step at `num_envs = 1024`. Fusing them
-is a **73× speedup** (1.8 → 130 steps/s on MPS). Arithmetic was never the wall.
-Measured numbers in [`docs/BLOCK_C.md`](docs/BLOCK_C.md); **re-run
-`scripts/bench_occlusion.py` on CUDA** before declaring D's gate met.
+✅ **The throughput gate is met.** RTX 5090, 2026-08-12: compiled occlusion runs
+**3.17 M env-steps/s** at `num_envs = 1024` — ~3170× the gate — and occlusion is
+~99 % of the step, so the env is not the bottleneck. `num_envs` is now chosen on
+*learning* grounds, not throughput. Full table and provenance in
+[`docs/BLOCK_C.md`](docs/BLOCK_C.md).
+
+**Use `torch.compile`** — it is 110–150× on CUDA and free. But note the earlier
+"required, not an optimisation" framing was an MPS artefact: on CUDA *eager also
+clears the gate* (28.9 k env-steps/s, 29× over). And the 17.6 GB figure is memory
+*traffic* per call, **not** live allocation — chunking keeps peak VRAM under 4 GB
+in both paths. Do not reason about VRAM pressure from it.
 
 ---
 

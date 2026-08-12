@@ -223,8 +223,12 @@ module says sightlines are much longer, something is wrong.
 - [x] Reproduces Block B's measured sightline distribution
       (`tests/test_occlusion_map.py`) — see below
 - [x] Benchmarked at realistic `num_envs` and the real `M`
-      (`scripts/bench_occlusion.py`) — **must be re-run on CUDA**
-- [x] Works on CPU and MPS with no silent downgrade; CUDA path untested locally
+      (`scripts/bench_occlusion.py`) — ✅ **re-run on CUDA 2026-08-12, gate met
+      with ~3170× margin**; see "CUDA — the verdict" below
+- [x] Works on CPU, MPS and CUDA with no silent downgrade. ⚠️ CUDA correctness
+      rests on `bench_occlusion.py`'s parity check, **not** on the test suite —
+      no test in this repo sets a device, so all 158 run on CPU wherever they are
+      invoked. Parameterising them over device is a Block D deliverable
 
 ---
 
@@ -290,15 +294,50 @@ the elementwise slab chain writes ~20 intermediates of `(links × M)`, about
 17.6 GB/step at `num_envs = 1024`, which would need 17 600 TB/s to hit the gate.
 `torch.compile` keeps those intermediates in registers and the traffic collapses.
 
-⚠️ **These are MPS numbers on a laptop and are a lower bound, not the verdict.**
-Training runs on a rented CUDA GPU. Re-run `scripts/bench_occlusion.py` there
-before Block D's gate is declared met, and treat the compiled path as required
-rather than optional.
+### ✅ CUDA — the verdict (2026-08-12)
 
-If more headroom is needed, the next lever is a **spatial broad phase**: at
+RTX 5090 32 GB · torch 2.13.0+cu130 · CUDA 13.0 · Triton 3.7.1 · Python 3.12.3 ·
+`chunk=512`, fp32. Parity green before timing: `cuda vs cpu` 0.00e+00 m,
+`compiled vs eager` 1.53e-05 m.
+
+| num_envs | calls/s eager | calls/s compiled | speedup | **env-steps/s compiled** | 10 M-step run |
+|---|---|---|---|---|---|
+| 64 | 291.2 | 19529.0 | 67× | 1.25 M | 8.0 s |
+| 256 | 147.0 | 9325.6 | 63× | 2.39 M | 4.2 s |
+| **1024** | 28.2 | **3094.1** | **110×** | **3.17 M** | **3.2 s** |
+| 2048 | 10.9 | 1636.4 | 150× | 3.35 M | 3.0 s |
+
+**The gate is met with ~3170× of margin at `num_envs = 1024`**, and occlusion is
+~99 % of the step, so the env cannot plausibly be the bottleneck. Throughput
+saturates near **3.3 M env-steps/s** by 2048, so `num_envs` is now free to choose
+on *learning* grounds (rollout batch size) rather than throughput grounds.
+
+Two things the MPS numbers got wrong, both worth recording:
+
+1. **On CUDA, eager also clears the gate** — 28.2 × 1024 = 28.9 k env-steps/s,
+   29× over. `torch.compile` is a 110–150× improvement on something that already
+   passes, not the difference between feasible and infeasible. It stays the
+   default because it is free and large, but the "required, not an optimisation"
+   framing was an artefact of MPS, where eager genuinely was ~500× short.
+2. **Peak VRAM stays under 4 GB, in both paths.** The 17.6 GB figure above is
+   memory *traffic* per call, not live allocation: `chunk=512` keeps only
+   `(num_envs × 21 × 512)` resident, i.e. ~0.9 GB of live intermediates at 1024
+   and ~1.8 GB at 2048. Fusion removes traffic, not footprint. Anyone reasoning
+   about VRAM pressure from the 17.6 GB number will be wrong by ~20×.
+
+Observed GPU utilisation is near zero in a monitoring UI, which is expected and
+not a sign the benchmark measured nothing: five timed iterations at 0.32 ms is
+~1.6 ms of GPU work, far below any polling interval. Correctness is established
+by the parity check and the explicit `torch.cuda.synchronize()` around the timing
+window, not by the utilisation graph.
+
+**The `--chunk` sweep was not run and is not worth running.** It existed to find
+headroom; at 3000× over the gate there is none to find.
+
+If more headroom is ever needed, the next lever is a **spatial broad phase**: at
 2275 boxes/km², a 500 m segment with a 40 m corridor has ~45 real candidates
-rather than 5120 — a ~100× reduction. Not built, because fusion may already be
-enough and an unnecessary index structure is a correctness risk in the module
+rather than 5120 — a ~100× reduction. **Do not build it.** Fusion is more than
+enough, and an unnecessary index structure is a correctness risk in the module
 that *is* RQ1's independent variable.
 
 ## Watch out for

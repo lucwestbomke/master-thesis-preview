@@ -45,18 +45,33 @@ stops being informative. **The reported quantity becomes wall-clock for a
 10 M-step run, measured end-to-end including the learner, target ≤3 h.** That is
 the figure the 120 GPU-hour budget is made of, and unlike the floor it can fail.
 
-**`torch.compile` remains mandatory** under either reading, for two reasons that
-survive the unit question:
+### ✅ Resolved on CUDA, 2026-08-12 — the gate is met
 
-- **Cost.** 73× on the dominant term is 73× on the 300–500 GPU-hours of
-  *development* too, which is the budget that actually binds.
-- **Memory.** Unfused, the slab chain holds ~8.8 GB of live intermediates per
-  call at `num_envs = 1024` (17.6 GB of traffic). That competes with the learner
-  for VRAM on the same card. Fusion removes the allocation, not just the time.
+RTX 5090, compiled occlusion: **3.17 M env-steps/s at `num_envs = 1024`, ~3170×
+the gate.** Full table and provenance in [`BLOCK_C.md`](BLOCK_C.md). Three
+consequences, two of which correct claims made earlier in this file:
 
-⚠️ All figures above are Apple MPS on a laptop and are a **lower bound**. No
-verdict may be declared until `bench_occlusion.py` and `bench_env.py` have run on
-the rented CUDA GPU.
+1. **The unit question is moot for the verdict.** 3094 batched calls/s also
+   clears 1000 under the other reading. Both readings pass; the definition still
+   stands so the budget arithmetic stays coherent.
+2. **`torch.compile` is not load-bearing on CUDA.** Eager clears the gate too
+   (28.9 k env-steps/s, 29× over). It stays the default because 110–150× is free,
+   but the "mandatory, not an optimisation" framing was an MPS artefact — there
+   eager genuinely was ~500× short.
+3. **The memory argument was wrong.** 17.6 GB is *traffic per call*, not live
+   allocation: `chunk=512` keeps only `(num_envs × 21 × 512)` resident, ~0.9 GB
+   at 1024. Measured peak VRAM stayed under 4 GB in both paths. Fusion removes
+   traffic, not footprint, and nothing competes with the learner for VRAM.
+
+**`num_envs` is therefore chosen on learning grounds, not throughput grounds** —
+throughput saturates near 3.3 M env-steps/s by 2048, and the binding constraint
+for a 10 M-step run is entirely the learner.
+
+**What this changes about the rest of the block.** D's remaining job is
+correctness and the skrl seam, not performance. D0/D1 still run — the "~99 % of
+cost is occlusion" assumption below now *matters more*, because if occlusion is
+0.32 ms and the scaffolding adds 3 ms, the profile has inverted and the
+per-stage breakdown is the only thing that would show it.
 
 ### 2. Altitude band — 40 to 120 m
 
@@ -427,7 +442,7 @@ reading:
 
 | | Built | Benchmarked | Decision it informs |
 |---|---|---|---|
-| **D−1** | **nothing — this comes first** | `scripts/bench_occlusion.py` + the full test suite, on the rented CUDA GPU | occlusion is ~99 % of the step, so this is ~99 % of the gate answer. It also runs the CUDA code path for the first time ever |
+| **D−1** ✅ | **nothing — this came first** | `bench_occlusion.py` + suite on the rented CUDA GPU, 2026-08-12 | **done: gate met, ~3170× margin.** See above |
 | **D0** | kinematics + occlusion + channel + routing on random state. No obs, no reward, no reset. | first `bench_env.py` run | is the floor plan viable, and at which `num_envs` |
 | **D1** | + reward, observations, auto-reset, curriculum | re-run; expect **≤2×** D0 | did the scaffolding add a second bottleneck |
 | **D2** | + PettingZoo adapter | API compliance only | — |
@@ -600,7 +615,7 @@ scripted policy through it. Five questions, all of which decide something:
 
 ## Definition of done
 
-- [ ] **D−1 done first:** full test suite and `bench_occlusion.py` run on the
+- [x] **D−1 done first:** full test suite and `bench_occlusion.py` run on the
       rented CUDA GPU, parity check green, `--chunk` swept, results plus full
       provenance (GPU, driver, CUDA, torch, Triton) written into
       [`BLOCK_C.md`](BLOCK_C.md) in both units
