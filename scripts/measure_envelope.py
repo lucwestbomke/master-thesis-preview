@@ -25,6 +25,15 @@ What each section decides:
                actually buying.
   budget    solo drone vs relay chain to a 1400 m HVT.
             -> whether the relay chain is necessary, and for which reason.
+  solo      can a BEST-PLACED single drone do the mission on the real map?
+            -> re-validates W1 ("one drone cannot do this"), which until now
+               rested on scenario_design.py's analytic canyon rule -- measured
+               to be more conservative than the real geometry.
+  route     does the pre-baked route bank ever stall?
+            -> the open question in DECISIONS.md about grow_outward lingering.
+  policy    random and waypoint policies through the built env.
+            -> the floor and ceiling Block D's numbers are quoted against.
+               NOT B0: that is a designed baseline and belongs to Block E.
 
 Usage:
     uv run python scripts/measure_envelope.py
@@ -50,6 +59,7 @@ from src.env.channel import (
     pathloss_a2a_db,
     pathloss_a2g_umi_av_db,
 )
+from src.env.core import ALT_MAX_M, BatchedSwarmEnv, EnvConfig
 from src.env.occlusion import segment_clearance
 
 ARTEFACT = Path(__file__).resolve().parent.parent / "data" / "frankfurt_box.npz"
@@ -287,6 +297,156 @@ def sec_budget(alt_m: float = 120.0) -> None:
     print("a radius model would capture a range requirement perfectly.")
 
 
+# --------------------------------------------------------------------------- #
+# Is the scenario premise still true on the real map?
+# --------------------------------------------------------------------------- #
+
+
+def sec_solo(boxes: torch.Tensor, heights: torch.Tensor, art, routes: int = 512) -> None:
+    """Best-case solo drone. Decides whether W1 survives real geometry.
+
+    The drone is placed in the most favourable position available to it --
+    hovering directly over the HVT at the ceiling, where it sees the target
+    ~97 % of the time and has the shortest possible slant to the MCV. If even
+    that fails, "one drone cannot do the mission" holds for *any* policy, which
+    is a far stronger statement than a scripted run could make.
+
+    scenario_design.py answers the same question with an analytic canyon rule
+    (ground LoS within 0.625*altitude) that the A2G measurement above shows is
+    more conservative than the real map, so the premise needs checking here.
+    """
+    print("\n== Solo drone, best case: hovering over the HVT at the ceiling ==")
+    n0 = noise_floor_dbm(BANDWIDTH_HZ, 7.0)
+    noise_mw = dbm_to_mw(torch.tensor(n0))
+    route = torch.from_numpy(art["route_xy"]).float()
+    mcv2 = torch.from_numpy(art["route_mcv"]).float()
+    g = torch.Generator().manual_seed(11)
+    sel = torch.randperm(route.shape[0], generator=g)[:routes]
+    route, mcv2 = route[sel], mcv2[sel]
+    mcv = torch.cat([mcv2, torch.full((routes, 1), MCV_Z)], 1)
+
+    print(
+        f"{'alt':>6}{'t':>6}{'sep':>9}{'sees HVT':>11}{'link ok':>10}{'MISSION OK':>13}{'p50 Mbps':>11}"
+    )
+    for alt in (80.0, ALT_MAX_M):
+        for t in (0, 300, EPISODE_STEPS - 1):
+            hvt = torch.cat([route[:, t, :], torch.full((routes, 1), HVT_Z)], 1)
+            drone = torch.cat([route[:, t, :], torch.full((routes, 1), alt)], 1)
+
+            sees = segment_clearance(drone, hvt, boxes, heights) >= 0
+            clr_mcv = segment_clearance(drone, mcv, boxes, heights)
+            d3d = (drone - mcv).norm(dim=-1)
+            pl = pathloss_a2g_umi_av_db(d3d, drone[:, 2], clr_mcv >= 0)
+
+            # Jammer rides the HVT and lands on the MCV, which is what receives.
+            d_jam = (hvt - mcv).norm(dim=-1)
+            jam_los = segment_clearance(hvt, mcv, boxes, heights) >= 0
+            jam_mw = dbm_to_mw(JAMMER_DBM - pathloss_a2g_umi_av_db(d_jam, mcv[:, 2], jam_los))
+
+            sinr = 10.0 * torch.log10(dbm_to_mw(PTX_DBM - pl) / (jam_mw + noise_mw))
+            cap = capacity_mbps(sinr, BANDWIDTH_HZ)
+            ok = cap >= THRESHOLD_MBPS
+            sep = (hvt[:, :2] - mcv[:, :2]).norm(dim=-1)
+            print(
+                f"{alt:>5.0f}m{t:>6}{sep.median():>8.0f}m{sees.float().mean() * 100:>10.1f}%"
+                f"{ok.float().mean() * 100:>9.1f}%{(sees & ok).float().mean() * 100:>12.1f}%"
+                f"{cap.median():>11.1f}"
+            )
+    print("W1 holds only if MISSION OK stays low once the HVT is far out.")
+
+
+def sec_route(art) -> None:
+    """Does grow_outward stall? The open question in DECISIONS.md.
+
+    One route once spent 333 steps (133 s) on a ~240 m bridge -- about 5x too
+    long at the capped speed. The bridge decks are gone, but the *timing* was
+    never re-checked, and the escalation profile is calibrated on medians so a
+    few stalled routes would not show up in it.
+    """
+    print("\n== Route bank: does the outward walk ever stall? ==")
+    r = art["route_xy"]
+    step = np.linalg.norm(np.diff(r, axis=1), axis=-1)  # (R, T-1) metres per step
+    # A "stall" is a run of steps covering less ground than a slow walk.
+    stalled = step < 0.4  # < 1 m/s at dt = 0.4 s
+    runs = np.zeros(len(r), dtype=int)
+    for i in range(len(r)):
+        best = cur = 0
+        for v in stalled[i]:
+            cur = cur + 1 if v else 0
+            best = max(best, cur)
+        runs[i] = best
+    net = np.linalg.norm(r[:, -1, :] - r[:, 0, :], axis=-1)
+    path = step.sum(axis=1)
+    straightness = net / np.maximum(path, 1e-6)
+    print(f"  routes                       {len(r)}")
+    print(
+        f"  longest stalled run   p50/p90/max  {np.percentile(runs, 50):.0f} /"
+        f" {np.percentile(runs, 90):.0f} / {runs.max():.0f} steps"
+    )
+    print(f"  routes stalled > 50 steps    {(runs > 50).sum()}  ({(runs > 50).mean() * 100:.1f} %)")
+    print(
+        f"  straightness (net/path) p10/p50  {np.percentile(straightness, 10):.2f} /"
+        f" {np.percentile(straightness, 50):.2f}"
+    )
+    print(f"  slowest route mean speed     {(path / (EPISODE_STEPS * DT_S)).min():.2f} m/s")
+
+
+# --------------------------------------------------------------------------- #
+# Policy floor and ceiling
+# --------------------------------------------------------------------------- #
+
+
+def waypoint_policy(env: BatchedSwarmEnv, altitude_m: float = 100.0) -> torch.Tensor:
+    """Crude relay heuristic: string the drones along the MCV->HVT line.
+
+    **This is not B0.** B0 is a designed geometric baseline that gets reported
+    (THESIS_PLAN §3) and belongs to Block E. This exists only so the numbers
+    Block D quotes have a regenerable ceiling.
+    """
+    n = env.cfg.num_drones
+    frac = torch.linspace(1.0, 0.15, n, device=env.device).view(1, n, 1)
+    target = env.hvt_pos.unsqueeze(1) * (1.0 - frac) + env.mcv_pos.unsqueeze(1) * frac
+    target = torch.cat([target[..., :2], torch.full_like(target[..., :1], altitude_m)], dim=-1)
+    drive = (target - env.drone_pos) * 0.25 - env.drone_vel * 1.2
+    return drive.clamp(-10.0, 10.0) / 10.0
+
+
+def sec_policy(num_envs: int = 64, num_drones: int = 5) -> None:
+    """The floor and ceiling every Block D claim is quoted against."""
+    print("\n== Policies through the built env (floor and ceiling) ==")
+    print(f"{'policy':<12}{'mission-capable':>17}{'observed':>11}{'chain occl':>12}{'3-hop':>8}")
+    for name in ("random", "waypoint"):
+        env = BatchedSwarmEnv(
+            EnvConfig(
+                num_envs=num_envs,
+                num_drones=num_drones,
+                seed=1,
+                stage_weights=(0.0, 0.0, 0.0, 1.0),
+                compile_occlusion=False,
+            )
+        )
+        env.reset()
+        torch.manual_seed(0)
+        cap = seen = occl = 0.0
+        hops = torch.zeros(num_drones + 2)
+        for _ in range(EPISODE_STEPS):
+            if name == "random":
+                act = torch.empty(num_envs, num_drones, 3, device=env.device).uniform_(-1, 1)
+            else:
+                act = waypoint_policy(env)
+            _, _, _, _, ex = env.step(act)
+            cap += ex["mission_capable"].float().mean().item()
+            seen += ex["sees_any"].float().mean().item()
+            occl += ex["chain_occluded"].float().mean().item()
+            hops += torch.bincount(ex["hop_count"], minlength=num_drones + 2).float().cpu()
+        t = EPISODE_STEPS
+        print(
+            f"{name:<12}{cap / t * 100:>16.1f}%{seen / t * 100:>10.1f}%"
+            f"{occl / t * 100:>11.1f}%{hops[3] / hops.sum() * 100:>7.1f}%"
+        )
+    print("Observed == mission-capable means the LINK never binds, only observation.")
+
+
 SECTIONS = {
     "a2a": lambda b, h, a: sec_a2a(b, h),
     "a2g": lambda b, h, a: sec_a2g(b, h, a),
@@ -294,6 +454,9 @@ SECTIONS = {
     "cue": lambda b, h, a: sec_cue(a),
     "search": lambda b, h, a: sec_search(b, h, a),
     "budget": lambda b, h, a: sec_budget(),
+    "solo": lambda b, h, a: sec_solo(b, h, a),
+    "route": lambda b, h, a: sec_route(a),
+    "policy": lambda b, h, a: sec_policy(),
 }
 
 

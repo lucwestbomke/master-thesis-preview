@@ -599,24 +599,87 @@ Also confirmed on the installed version: skrl's own `PettingZooWrapper` really
 does round-trip through NumPy every step, which is the [`DECISIONS.md`](DECISIONS.md)
 claim that justifies this wrapper existing.
 
+### ⚠️ W1 versus the altitude ceiling — the block's most consequential finding
+
+The scenario rests on **W1: a single drone cannot do the mission**, which is what
+makes the swarm and the relay chain necessary at all. Until now W1 rested on
+`scenario_design.py`'s analytic canyon rule (ground LoS within 0.625×altitude),
+and the A2G measurement above showed that rule is *more conservative than the
+real map*.
+
+Measured properly (`measure_envelope.py --only solo`): put one drone in the
+**most favourable position available to it** — hovering directly over the HVT,
+where it sees the target ~100 % of the time and has the shortest slant to the
+MCV — and ask whether it can still close the link. This is an upper bound on
+solo capability under *any* policy, which is far stronger than a scripted run.
+
+**Fraction of routes where the best-placed solo drone is mission-capable:**
+
+| ceiling | t=300 (1015 m) | t=450 (1218 m) | t=599 (1336 m) |
+|---|---|---|---|
+| 60 m | 16.0 % | 1.4 % | 0.4 % |
+| 70 m | 26.2 % | 4.9 % | 0.6 % |
+| **80 m** | 41.6 % | 13.1 % | **3.3 %** |
+| 90 m | 66.4 % | 27.1 % | 13.5 % |
+| 100 m | 80.3 % | 43.2 % | 23.2 % |
+| 110 m | 89.6 % | 60.4 % | 37.9 % |
+| **120 m** (current) | 95.1 % | 74.4 % | **57.4 %** |
+
+**At the 120 m ceiling this file recommended, W1 fails.** A perfectly-placed
+single drone does the mission 57 % of the time at maximum separation. At 80 m it
+does so 3.3 % of the time and W1 holds comfortably.
+
+This is a direct consequence of decision 2. The ceiling was chosen on the A2A
+occlusion constraint alone (keep the tower cluster blocking, so F1 has an A2A
+component) — that ruled out anything above ~150 m, and 120 m looked safe.
+**W1 is the tighter constraint and was not checked at the time.**
+
+Both constraints push the same way, so lowering the ceiling costs nothing and
+buys two things:
+
+| | 80 m | 120 m |
+|---|---|---|
+| A2A links blocked (RQ1's F1 rung) | **31.2 %** | 24.6 % |
+| solo drone mission-capable at 1336 m | **3.3 %** | 57.4 % |
+| HVT visible at 100–200 m offset | 38.2 % | 48.1 % |
+
+**Recommendation: move the band to 40–80 m.** It restores W1, *strengthens* the
+A2A occlusion RQ1 depends on, makes observation harder (which is the task), and
+lands the ceiling exactly on the 80 m nominal that
+[`AGENTS.md`](../AGENTS.md), [`PHYSICS.md`](PHYSICS.md), THESIS_PLAN §5 and
+`scenario_design.py` already all assume — so the env and the sizing would finally
+agree. It also **removes the `TODO(verify)` entirely**: the ceiling stops needing
+a civil-UAS citation and becomes derived from the project's own scenario
+requirement, which is a stronger justification than a regulation.
+
+The cost: with ceiling = nominal, the vertical action dimension is fully
+degenerate (everything still pushes up). That was already expected at 120 m; at
+80 m it is certain. Worth stating in the methodology rather than hiding.
+
+**Not applied — this reverses an approved parameter and ripples into Chapters 3
+and 5, so it is a decision for the author, not a fix to land quietly.**
+
 ### What a scripted policy shows at D1
 
 64 episodes, drones strung along the MCV→HVT line at 100 m:
 
-| | |
-|---|---|
-| mission-capable steps | 45.8 % (p10 21 %, p90 70 %) |
-| HVT observed steps | **45.8 % — identical** |
-| chain crosses an occluded link | **18.5 %** |
-| hop share | 0-hop 54 %, 1-hop 18 %, 2-hop 22 %, 3-hop **3.2 %**, 4-hop 3.3 % |
-| battery used over 239.6 s | 6.7 % (hovering: 7.03 %, vs PHYSICS.md's ~7 %) |
+Regenerate with `measure_envelope.py --only policy`:
+
+| policy | mission-capable | observed | chain occluded | 3-hop |
+|---|---|---|---|---|
+| random | 28.7 % | 31.8 % | 18.4 % | 3.3 % |
+| waypoint | **45.8 %** | 45.8 % | 18.5 % | 3.2 % |
+
+Battery over 239.6 s: 6.7 % chasing, 7.03 % hovering, against PHYSICS.md's ~7 %.
 
 Three things to carry forward:
 
-- **Mission-capable and observed are still identical**, as at D0. Whenever the
-  target is seen the link clears 5 Mbps, so under this policy observation binds
-  and the link never does. If that survives learned policies, RQ1's ladder
-  discriminates mainly through sensor-ray occlusion rather than link physics.
+- **Observation binds; the link almost never does.** For the waypoint policy
+  mission-capable and observed are *identical* — whenever the target is seen the
+  link clears 5 Mbps. For the random policy they differ by 3.1 points, so the
+  link does bind occasionally, when the drones are scattered enough that no chain
+  closes. If this survives learned policies, RQ1's ladder discriminates mainly
+  through sensor-ray occlusion rather than link physics.
 - **`chain_occluded` is live and discriminating at 18.5 %** — a geometry-blind
   policy routing straight through buildings is exactly the signature RQ1
   predicts, and the metric now exists to measure it.
@@ -709,16 +772,13 @@ Extend [`scripts/view_episode.py`](../scripts/view_episode.py) to draw the
 drones, the chosen relay chain and per-link clearance, then run a random and a
 scripted policy through it. Five questions, all of which decide something:
 
-1. **Does the solo drone actually fail?** `scenario_design.py`'s analytic canyon
-   rule is more conservative than the real map (0 % vs a measured 48 % visibility
-   at 100–200 m offset from 120 m). Run a 1-drone policy and a chain over the
-   route bank and compare e2e capacity distributions. If the solo drone succeeds
-   materially more than a few percent of the time, the box or the escalation
-   needs revisiting **before the March freeze**.
-2. **Is the 3-hop regime exercised?** [`BLOCK_B.md`](BLOCK_B.md) flagged this for
-   Block D: escalation lands at median 1333 m against a 1400 m target, and 45 %
-   of route steps are already beyond 1000 m. Record `hop_count` over a full bank
-   sweep. If 3-hop chains are rare, the premise is under-exercised.
+1. ⚠️ **Does the solo drone actually fail? — MEASURED, AND THE ANSWER DEPENDS ON
+   THE CEILING.** See "W1 versus the altitude ceiling" below. This is the most
+   consequential thing Block D found.
+2. **Is the 3-hop regime exercised?** Partially: **3.2–3.3 % of steps** under
+   both a random and a waypoint policy. Policy-dependent, so B0 in Block E gives
+   the number worth reporting — but two independent policies agreeing at ~3 %
+   makes BLOCK_B's under-exercised-escalation worry look real.
 3. **Altitude.** Does the policy pin to the 120 m ceiling? If so that is a
    finding about the reward, to be reported rather than tuned away. *Open —
    a random policy sinks to the 40 m floor instead (zero-mean vertical
@@ -727,11 +787,13 @@ scripted policy through it. Five questions, all of which decide something:
 4. **Mission-capable fraction** for a random and a scripted policy — ✅ measured:
    **26.8 % random, 45.8 % scripted**. B0 in Block E replaces the crude scripted
    policy with a real geometric heuristic and should beat both.
-5. **The 333-step lingering route.** [`DECISIONS.md`](DECISIONS.md) leaves it
-   open: `grow_outward` may stall where the graph is sparse. The bridge decks are
-   gone and the worst route is now 29 steps, but the *timing* was never
-   re-checked, and a running env plus the viewer is the cheapest place to close
-   it.
+5. **The 333-step lingering route — ✅ CLOSED.** Measured over the whole bank
+   (`measure_envelope.py --only route`): the longest run of near-stationary steps
+   is **1 step**, p90 is 1, and **no route stalls for more than 50 steps**. The
+   slowest route still averages 5.77 m/s and straightness (net/path) has p50
+   0.56 — routes wander, which is expected of street geometry, but none stalls.
+   `grow_outward` is not the problem the 333-step observation suggested; that was
+   the bridge decks, and they are gone.
 
 ---
 
@@ -754,8 +816,10 @@ scripted policy through it. Five questions, all of which decide something:
       rented CUDA GPU, parity check green, `--chunk` swept, results plus full
       provenance (GPU, driver, CUDA, torch, Triton) written into
       [`BLOCK_C.md`](BLOCK_C.md) in both units
-- [ ] Tests parameterised over device, so `pytest` on a GPU box tests the GPU
-      **(still open)**
+- [x] Tests parameterised over device, so `pytest` on a GPU box tests the GPU —
+      `src/env/test_device_parity.py`, validated against MPS; occlusion, routing
+      and the full step all agree with CPU. Includes the CUDA-only
+      `set_sync_debug_mode("error")` test that enforces the no-host-sync rule
 - [ ] Gate units written into [`AGENTS.md`](../AGENTS.md) so they cannot be
       re-opened; both reported by `bench_env.py`
 - [x] `src/env/core.py`: batched, pure-tensor `step()`; no `.item()`/`.cpu()`/
@@ -778,8 +842,10 @@ scripted policy through it. Five questions, all of which decide something:
       NaNs (zero non-finite tensors, 1024 auto-resets), and the mission is
       *achievable*: **random 26.8 % vs scripted 45.8 %** mission-capable, which
       gives [`MODELS.md`](MODELS.md)'s "must beat random" requirement a number
-- [ ] The five "measure this while you are here" questions answered and recorded
-      in this file
+- [x] The five "measure this while you are here" questions answered or explicitly
+      deferred, and recorded in this file. **One of them (W1) demands a decision
+      before the block can be called closed.**
+- [x] `view_episode.py --drones` overlays the swarm and the chosen relay chain
 - [ ] **Benchmarked on the rented CUDA GPU.** Until then D is not done, and no
       claim about the gate may be made from local numbers.
 

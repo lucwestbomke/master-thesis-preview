@@ -128,6 +128,53 @@ def clearance_series(mcv: np.ndarray, traj: np.ndarray, boxes, heights) -> np.nd
     ).numpy()
 
 
+def fly_swarm(route_idx: int, num_drones: int = 5) -> dict:
+    """Run one episode of the real env on this route and record what to draw.
+
+    Uses the crude waypoint policy from `measure_envelope.py`, NOT B0 -- this is
+    an inspection aid, and the presentation renderer plus the real scripted
+    baseline are Block E. The point is that every geometry problem in this
+    project so far was found by looking, and Block D added a lot of geometry:
+    chain selection, sensor gating, the altitude band.
+    """
+    import torch
+    from measure_envelope import waypoint_policy
+
+    from src.env.core import EPISODE_STEPS, BatchedSwarmEnv, EnvConfig
+
+    env = BatchedSwarmEnv(
+        EnvConfig(
+            num_envs=1,
+            num_drones=num_drones,
+            seed=0,
+            auto_reset=False,
+            compile_occlusion=False,
+            stage_weights=(0.0, 0.0, 0.0, 1.0),
+        )
+    )
+    env.reset()
+    # Pin the episode to the route being viewed, so the picture matches the
+    # trajectory drawn from the artefact rather than a random other one.
+    env.route_id = torch.full_like(env.route_id, route_idx)
+    env.mcv_pos[:, :2] = env.route_mcv[env.route_id]
+    env.hvt_pos[:, :2] = env.route_xy[env.route_id, 0]
+    env.drone_pos[:, :, 0] = env.mcv_pos[:, None, 0]
+    env.drone_pos[:, :, 1] = env.mcv_pos[:, None, 1]
+    env.snap, _ = env._evaluate()
+
+    pos, chain, capable = [], [], []
+    for _ in range(EPISODE_STEPS):
+        _, _, _, _, ex = env.step(waypoint_policy(env))
+        pos.append(env.drone_pos[0].clone())
+        chain.append(ex["on_edge"][0].clone())
+        capable.append(bool(ex["mission_capable"][0]))
+    return {
+        "pos": torch.stack(pos).numpy(),  # (T, N, 3)
+        "chain": torch.stack(chain).numpy(),  # (T, R, R) bool, R = N+1, MCV last
+        "capable": np.asarray(capable),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--route", type=int, default=0)
@@ -136,6 +183,11 @@ def main() -> None:
     ap.add_argument("--zoom", action="store_true", help="follow the HVT instead of the whole box")
     ap.add_argument("--stride", type=int, default=4, help="steps per rendered frame")
     ap.add_argument("--fps", type=int, default=25)
+    ap.add_argument(
+        "--drones",
+        action="store_true",
+        help="fly the swarm through the env and overlay it plus the chosen relay chain",
+    )
     ap.add_argument(
         "--polygons",
         action="store_true",
@@ -158,6 +210,8 @@ def main() -> None:
         print(f"worst route is #{idx}: inside a building for {max(frac):.1%} of the episode")
     idx = min(idx, len(routes) - 1)
 
+    swarm = fly_swarm(idx) if args.drones else None
+
     mcv, traj = mcvs[idx], routes[idx]
     indoors = inside_any_box(traj, boxes)
     clear = clearance_series(mcv, traj, boxes, heights)
@@ -168,6 +222,8 @@ def main() -> None:
     print(f"  separation {dist[0]:.0f} m -> {dist[-1]:.0f} m")
     print(f"  steps inside a building: {indoors.sum()} / {len(traj)} ({indoors.mean():.1%})")
     print(f"  MCV->HVT direct LoS clear on {100 * (clear >= 0).mean():.0f}% of steps")
+    if swarm is not None:
+        print(f"  swarm mission-capable on {100 * swarm['capable'].mean():.0f}% of steps")
 
     # ---- figure ----------------------------------------------------------
     fig, (ax, axc) = plt.subplots(2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [4, 1]})
@@ -199,6 +255,18 @@ def main() -> None:
     (hvt_dot,) = ax.plot([], [], "o", ms=11, color="#e74c3c", mec="k", zorder=7, label="HVT")
     (ray,) = ax.plot([], [], lw=2.0, zorder=6)
     (trail,) = ax.plot([], [], color="#e67e22", lw=2.5, zorder=5)
+    drone_dots = None
+    chain_lines: list = []
+    if swarm is not None:
+        (drone_dots,) = ax.plot(
+            [], [], "^", ms=8, color="#2980b9", mec="k", zorder=7, label="drones"
+        )
+        # One line per possible hop; a chain is at most R-1 = num_drones long.
+        chain_lines = [
+            ax.plot([], [], color="#27ae60", lw=2.0, alpha=0.9, zorder=6)[0]
+            for _ in range(swarm["chain"].shape[1])
+        ]
+        ax.plot([], [], color="#27ae60", lw=2.0, label="relay chain")
     title = ax.set_title("")
     ax.set_aspect("equal")
     ax.legend(loc="upper left", fontsize=9)
@@ -231,6 +299,21 @@ def main() -> None:
         trail.set_data(traj[max(0, i - 100) : i + 1, 0], traj[max(0, i - 100) : i + 1, 1])
         blocked = clear[i] < 0
         ray.set_data([mcv[0], p[0]], [mcv[1], p[1]])
+
+        if swarm is not None:
+            dp = swarm["pos"][i]
+            drone_dots.set_data(dp[:, 0], dp[:, 1])
+            # node R-1 is the MCV; everything below it is a drone
+            nodes_xy = np.vstack([dp[:, :2], mcv[None, :2]])
+            hops = np.argwhere(swarm["chain"][i])
+            for k, line in enumerate(chain_lines):
+                if k < len(hops):
+                    a, b = hops[k]
+                    line.set_data(
+                        [nodes_xy[a, 0], nodes_xy[b, 0]], [nodes_xy[a, 1], nodes_xy[b, 1]]
+                    )
+                else:
+                    line.set_data([], [])
         ray.set_color("#c0392b" if blocked else "#27ae60")
         ray.set_alpha(0.8 if blocked else 0.9)
         cursor.set_data([i * DT_S, i * DT_S], [-80, 120])

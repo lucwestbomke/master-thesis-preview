@@ -679,6 +679,8 @@ class BatchedSwarmEnv:
             "e2e_capacity_mbps": new_snap.e2e_capacity_mbps,
             "hop_count": aux["hop_count"],
             "chain_occluded": aux["chain_occluded"],
+            "on_path": aux["on_path"],
+            "on_edge": aux["on_edge"],
             "sees_any": new_snap.observed,
             "altitude_m": self.drone_pos[..., 2],
             "battery": self.battery,
