@@ -222,7 +222,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 158 tests
+uv run pytest                                    # 204 tests
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for

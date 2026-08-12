@@ -445,9 +445,9 @@ reading:
 | **D−1** ✅ | **nothing — this came first** | `bench_occlusion.py` + suite on the rented CUDA GPU, 2026-08-12 | **done: gate met, ~3170× margin.** See above |
 | **D0** ✅ | kinematics + occlusion + channel + routing. No obs, no reward, no auto-reset. | first `bench_env.py` run | **done — the profile did not invert.** See below |
 | **D1** ✅ | + reward, observations, auto-reset, curriculum | re-run; expect **≤2×** D0 | **done — 2.4× D0, all of it accounted for.** See below |
-| **D2** | + PettingZoo adapter | API compliance only | — |
-| **D2.5** | + custom skrl multi-agent wrapper, **smoke only** | end-to-end env+learner throughput | does skrl accept this observation contract, and does it bootstrap at truncation |
-| **D3** | — | **re-run everything on the rented CUDA GPU** | **the verdict** |
+| **D2** ✅ | + PettingZoo adapter | API compliance only | **done** — `parallel_api_test` passes, adapter matches the core step for step |
+| **D2.5** ✅ | + custom skrl multi-agent wrapper, **smoke only** | — | **done, and it found three things.** See below |
+| **D3** | — | **re-run everything on the rented CUDA GPU** | the verdict, plus the two compile questions D1 opened |
 
 **D−1 comes before any env code is written**, and it is about an hour of rented
 GPU time. Occlusion is ~99 % of the step cost, so `bench_occlusion.py` — which
@@ -565,6 +565,39 @@ blockers, both found at D1 and both needing a CUDA re-check:
 Since occlusion is ~99.7 % of eager cost, compiling it alone captures
 essentially all the available speedup, and that form is already proven to fuse
 on CPU, MPS and CUDA by `bench_occlusion.py`.
+
+### ✅ D2 / D2.5 result — the seam works, and it was worth checking early
+
+`src/env/swarm_env.py` is now a thin PettingZoo adapter over the core
+(`auto_reset=False`, since that API ends the episode and waits for an explicit
+`reset()`). `parallel_api_test` passes, and a parity test asserts the adapter
+reproduces the core step for step — an adapter that quietly diverges is worse
+than none, because every hand-inspection through it would mislead.
+
+`src/training/skrl_wrapper.py` is the training path: agent-keyed dicts of
+tensors that never leave the device. MAPPO completes updates against it and
+policy parameters move.
+
+**Three things the smoke test found, all of which would have cost Block G:**
+
+1. **`time_limit_bootstrap` defaults to `False` in skrl 2.1.0.** Left alone,
+   every truncation is treated as a genuine terminal state — the critic learns
+   the world ends at 600 steps. With no time feature in the observation (a
+   deliberate choice, decision 3) and γ≈0.999, that bias is large and completely
+   silent. Overridden in `MAPPO_OVERRIDES` and asserted by a test.
+2. **`discount_factor` defaults to `0.99`**, which [`AGENTS.md`](../AGENTS.md)
+   rules out as blind to the hard end of the episode — exactly where the 3-hop
+   escalation lives.
+3. **MAPPO cannot be constructed at all with its own default config.**
+   `MAPPO_CFG` declares four `*_kwargs` fields defaulting to `{}`, and
+   `Config.expand()` rejects any dict whose keys are a strict subset of
+   `possible_agents` — which an empty dict always is. `mappo_cfg()` supplies them
+   pre-expanded. A genuine upstream bug, and the kind of thing that eats a day
+   when you meet it while also debugging a curriculum.
+
+Also confirmed on the installed version: skrl's own `PettingZooWrapper` really
+does round-trip through NumPy every step, which is the [`DECISIONS.md`](DECISIONS.md)
+claim that justifies this wrapper existing.
 
 ### What a scripted policy shows at D1
 
@@ -718,6 +751,7 @@ scripted policy through it. Five questions, all of which decide something:
       provenance (GPU, driver, CUDA, torch, Triton) written into
       [`BLOCK_C.md`](BLOCK_C.md) in both units
 - [ ] Tests parameterised over device, so `pytest` on a GPU box tests the GPU
+      **(still open)**
 - [ ] Gate units written into [`AGENTS.md`](../AGENTS.md) so they cannot be
       re-opened; both reported by `bench_env.py`
 - [x] `src/env/core.py`: batched, pure-tensor `step()`; no `.item()`/`.cpu()`/
@@ -730,11 +764,11 @@ scripted policy through it. Five questions, all of which decide something:
       — `swarm_env.py`'s `OBS_DIM` still to update when the adapter is rewritten
 - [x] Curriculum axes as per-env tensors; `ENVIRONMENT.md`'s stage table amended
       for `CONGESTION_FACTOR`
-- [ ] `swarm_env.py` rewritten over the core; `parallel_api_test` passes; adapter
+- [x] `swarm_env.py` rewritten over the core; `parallel_api_test` passes; adapter
       reproduces the core at `num_envs=1`
-- [ ] skrl smoke test at D2.5: rollout storage accepts `flat`, truncation
+- [x] skrl smoke test at D2.5: rollout storage accepts `flat`, truncation
       bootstraps distinctly from termination
-- [ ] `scripts/bench_env.py` reporting both units, wall-clock per run, per-stage
+- [x] `scripts/bench_env.py` reporting both units, wall-clock per run, per-stage
       breakdown, peak VRAM, and refusing a verdict off CUDA
 - [ ] A random policy runs a full 600-step episode at `num_envs ≥ 1024` without
       NaNs, and the mission is *achievable* — a scripted geometric policy reaches

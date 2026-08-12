@@ -412,3 +412,13 @@ def test_extras_report_the_headline_metric_and_its_attribution():
     capable = extras["mission_capable"]
     assert torch.all(~capable | extras["sees_any"])
     assert torch.all(~capable | (extras["e2e_capacity_mbps"] >= CAPACITY_THRESHOLD_MBPS))
+
+
+def test_state_dim_matches_the_critic_state_it_describes():
+    """`EnvConfig.state_dim` is what the skrl wrapper declares to MAPPO. If it
+    drifts from `_critic_state`, the mismatch surfaces as a shape error deep in
+    the learner rather than here."""
+    for n in (3, 5, 8):
+        env = make(num_envs=2, num_drones=n, use_occlusion=False)
+        obs, *_ = env.step(zeros_like_actions(env))
+        assert obs["state"].shape[-1] == env.cfg.state_dim, n

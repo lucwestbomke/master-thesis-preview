@@ -86,6 +86,7 @@ N_EVAL_ROUTES = 256
 EGO_DIM = 24  # 21 from ENVIRONMENT.md + 3 for the persistent cue vector
 NEIGHBOUR_DIM = 9
 EDGE_DIM = 2
+ACTION_DIM = 3  # dv_x, dv_y, dv_z. Ptx is NOT an action -- NEGATIVE_RESULTS.md
 N_MAX = 8  # max-N padding, so the MLP rung can be evaluated off-N at all
 FLAT_DIM = EGO_DIM + (N_MAX - 1) * (NEIGHBOUR_DIM + EDGE_DIM + 1)  # 24 + 77 = 108
 
@@ -137,6 +138,10 @@ class EnvConfig:
     reuse_limit: int = 3
     gamma: float = 0.999
     eval_routes: bool = False
+    # Training wants auto-reset; the PettingZoo adapter must NOT have it, because
+    # that API ends the episode and waits for an explicit reset(). Turning it off
+    # also skips the second physics pass, so a manual-reset loop costs half.
+    auto_reset: bool = True
     # Compile the occlusion kernel, which is ~99.7 % of the step's eager cost.
     # The whole `step()` is deliberately NOT compiled -- see `_clearance`.
     compile_occlusion: bool = True
@@ -155,6 +160,16 @@ class EnvConfig:
     @property
     def n_radio(self) -> int:
         return self.num_drones + 1
+
+    @property
+    def state_dim(self) -> int:
+        """Width of the critic's global state; see `_critic_state`.
+
+        Derived here rather than duplicated in the skrl wrapper, and pinned by a
+        test against the real tensor so the two cannot drift apart.
+        """
+        n = self.num_drones
+        return 9 * n + 9
 
 
 class BatchedSwarmEnv:
@@ -322,8 +337,10 @@ class BatchedSwarmEnv:
         )
         self.cue = torch.where(m1, cue, self.cue)
 
-    def reset(self) -> dict[str, Tensor]:
+    def reset(self, seed: int | None = None) -> dict[str, Tensor]:
         """Start fresh episodes everywhere and return the first observation."""
+        if seed is not None:
+            self.gen.manual_seed(seed)
         all_envs = torch.ones(self.cfg.num_envs, dtype=torch.bool, device=self.device)
         self._sample_episode(all_envs)
         self.snap, aux = self._evaluate()
@@ -666,6 +683,10 @@ class BatchedSwarmEnv:
             "altitude_m": self.drone_pos[..., 2],
             "battery": self.battery,
         }
+
+        if not cfg.auto_reset:
+            self.snap = new_snap
+            return final_obs, rew, terminated, truncated, extras
 
         # Auto-reset, then re-evaluate. The second pass produces both the
         # observation auto-reset must return AND Phi of the fresh state, which
