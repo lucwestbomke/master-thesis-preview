@@ -131,8 +131,9 @@ chapters shows what can be written *early*:
 A ████████████████████  done   physics, tested, frozen
 B ████████████████████  done   geometry baked → data/frankfurt_box.npz
 C ████████████████████  done   occlusion, validated + benchmarked
-D ░░░░░░░░░░░░░░░░░░░░  next   ← the gate that decides the experiment matrix
-E ░░░░░░░░░░░░░░░░░░░░
+D ██████████████████░░  built  env core + adapter + skrl seam; gate met 3170x
+                              (CUDA re-run of the full env still pending)
+E ░░░░░░░░░░░░░░░░░░░░  next
 F ░░░░░░░░░░░░░░░░░░░░
 G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall
 H ░░░░░░░░░░░░░░░░░░░░

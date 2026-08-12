@@ -27,8 +27,8 @@ line of sight, so the relay chain is geometrically necessary.
 | **A** | Channel, routing, energy, reward — all pure, batched, tested | ✅ **done**, 103 tests |
 | **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 27 tests |
 | **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
-| **D** | Batched env core + PettingZoo adapter; **≥1000 env-steps/s gate** | ⬅️ **next** — spec'd in [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
-| E | Renderer + B0 scripted heuristic baseline | not started |
+| **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
+| E | Renderer + B0 scripted heuristic baseline | ⬅️ **next** |
 | F | Fidelity levels F0–F4 as config flags | not started |
 | G | MAPPO integration + curriculum | not started |
 | H | Sionna offline validation of the closed-form channel | not started |

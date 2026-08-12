@@ -720,9 +720,13 @@ scripted policy through it. Five questions, all of which decide something:
    of route steps are already beyond 1000 m. Record `hop_count` over a full bank
    sweep. If 3-hop chains are rare, the premise is under-exercised.
 3. **Altitude.** Does the policy pin to the 120 m ceiling? If so that is a
-   finding about the reward, to be reported rather than tuned away.
-4. **Mission-capable fraction** for a random and a scripted policy — the headline
-   metric needs a floor and a ceiling before Block G can be judged.
+   finding about the reward, to be reported rather than tuned away. *Open —
+   a random policy sinks to the 40 m floor instead (zero-mean vertical
+   acceleration against a velocity-zeroing boundary accumulates there), so this
+   cannot be answered before Block G puts a learned policy in the loop.*
+4. **Mission-capable fraction** for a random and a scripted policy — ✅ measured:
+   **26.8 % random, 45.8 % scripted**. B0 in Block E replaces the crude scripted
+   policy with a real geometric heuristic and should beat both.
 5. **The 333-step lingering route.** [`DECISIONS.md`](DECISIONS.md) leaves it
    open: `grow_outward` may stall where the graph is sparse. The bridge decks are
    gone and the worst route is now 29 steps, but the *timing* was never
@@ -770,9 +774,10 @@ scripted policy through it. Five questions, all of which decide something:
       bootstraps distinctly from termination
 - [x] `scripts/bench_env.py` reporting both units, wall-clock per run, per-stage
       breakdown, peak VRAM, and refusing a verdict off CUDA
-- [ ] A random policy runs a full 600-step episode at `num_envs ≥ 1024` without
-      NaNs, and the mission is *achievable* — a scripted geometric policy reaches
-      mission-capable on a meaningful fraction of steps
+- [x] A random policy runs a full 600-step episode at `num_envs = 1024` without
+      NaNs (zero non-finite tensors, 1024 auto-resets), and the mission is
+      *achievable*: **random 26.8 % vs scripted 45.8 %** mission-capable, which
+      gives [`MODELS.md`](MODELS.md)'s "must beat random" requirement a number
 - [ ] The five "measure this while you are here" questions answered and recorded
       in this file
 - [ ] **Benchmarked on the rented CUDA GPU.** Until then D is not done, and no
