@@ -48,6 +48,11 @@ from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv
 # requires the two to be identical -- see the comment on `core.GAMMA`.
 #
 # `gae_lambda` is left alone: skrl already defaults it to 0.95.
+#
+# TODO(Block G): pair this discount with skrl's `value_preprocessor`
+# (`RunningStandardScaler`). Returns are of order 300 at gamma=0.997 and the
+# critic has to fit that scale. Not set here because the preprocessor needs the
+# state width and belongs with the training config rather than the env seam.
 MAPPO_OVERRIDES: dict[str, Any] = {
     "time_limit_bootstrap": True,
     "discount_factor": GAMMA,

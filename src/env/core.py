@@ -167,6 +167,14 @@ class EnvConfig:
     # confounded (docs/ENVIRONMENT.md).
     stage_weights: tuple[float, ...] = (0.0, 0.0, 0.0, 1.0)
     # Fidelity seams for Block F. Only the full model (=F4) is wired in D.
+    #
+    # WARNING for F3 ("+ jammer in the SINR denominator"): do NOT implement it by
+    # driving `jammer_on`. That tensor is the CURRICULUM's jammer axis, sampled
+    # per episode from the stage table. docs/ENVIRONMENT.md requires the jammer
+    # ramp to run identically in every fidelity condition, with the fidelity
+    # level deciding whether it does anything -- so F3 needs its own
+    # construction-time flag. Reusing `jammer_on` confounds RQ1's jammer rung
+    # with the curriculum and there is no way to separate them afterwards.
     use_occlusion: bool = True
 
     @property
