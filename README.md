@@ -91,10 +91,10 @@ from src.env.core import BatchedSwarmEnv, EnvConfig
 env = BatchedSwarmEnv(EnvConfig(num_envs=1024, num_drones=5, device="cuda:0"))
 obs = env.reset()
 obs, reward, terminated, truncated, extras = env.step(
-    torch.zeros(1024, 5, 3, device="cuda:0")          # normalised acceleration
+    torch.zeros(1024, 5, 3, device="cuda:0")  # normalised acceleration
 )
-extras["mission_capable"]      # (B,) the headline metric
-extras["chain_occluded"]       # (B,) does the chosen relay chain cross a building?
+extras["mission_capable"]  # (B,) the headline metric
+extras["chain_occluded"]  # (B,) does the chosen relay chain cross a building?
 ```
 
 Watch an episode, with the swarm and the relay chain the router actually chose:
