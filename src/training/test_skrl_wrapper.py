@@ -22,7 +22,7 @@ from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.multi_agents.torch.mappo import MAPPO
 from torch import nn
 
-from ..env.core import ACTION_DIM, FLAT_DIM, BatchedSwarmEnv, EnvConfig
+from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv, EnvConfig
 from .skrl_wrapper import MAPPO_OVERRIDES, SwarmMultiAgentWrapper, mappo_cfg
 
 FAST = {"use_occlusion": False, "compile_occlusion": False, "stage_weights": (1.0, 0.0, 0.0, 0.0)}
@@ -165,3 +165,19 @@ def test_mappo_runs_against_the_batched_core():
         for p0, p1 in zip(before[uid], agent.policies[uid].parameters(), strict=True)
     )
     assert moved, "MAPPO ran but no policy parameter changed -- the update did not happen"
+
+
+def test_learner_and_env_discount_the_same_way():
+    """PBRS invariance holds only if the shaping gamma equals the agent's gamma.
+
+    `reward.shaping` adds `gamma*Phi(s') - Phi(s)`. That telescopes to a
+    policy-independent constant -- and so provably cannot move the optimum -- only
+    when the two gammas match. If the env shapes at 0.997 while MAPPO discounts
+    at skrl's default 0.99, the shaping stops being potential-based and silently
+    becomes a bias on exactly the term chosen for being unbiased.
+    """
+    env, agent = build(num_envs=2, num_drones=2)
+    assert env.core.cfg.gamma == GAMMA
+    # post-expansion, which is the form MAPPO actually discounts with
+    for uid in env.possible_agents:
+        assert agent.cfg.discount_factor[uid] == env.core.cfg.gamma

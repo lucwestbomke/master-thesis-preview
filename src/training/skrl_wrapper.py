@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from skrl.envs.wrappers.torch import MultiAgentEnvWrapper
 
-from ..env.core import ACTION_DIM, FLAT_DIM, BatchedSwarmEnv
+from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv
 
 # --------------------------------------------------------------------------- #
 # skrl defaults that are wrong for this project
@@ -43,10 +43,14 @@ from ..env.core import ACTION_DIM, FLAT_DIM, BatchedSwarmEnv
 #
 # `discount_factor=0.99` is likewise skrl's default and AGENTS.md rules it out:
 # 0.99 is blind to the hard end of the episode, which is precisely where the
-# 3-hop escalation lives.
+# 3-hop escalation lives. It is taken from `core.GAMMA` rather than written here,
+# because the env's PBRS shaping uses the same constant and the invariance proof
+# requires the two to be identical -- see the comment on `core.GAMMA`.
+#
+# `gae_lambda` is left alone: skrl already defaults it to 0.95.
 MAPPO_OVERRIDES: dict[str, Any] = {
     "time_limit_bootstrap": True,
-    "discount_factor": 0.999,
+    "discount_factor": GAMMA,
 }
 
 # skrl 2.1.0 cannot construct MAPPO with its own default config. `MAPPO_CFG`

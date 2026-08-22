@@ -717,10 +717,23 @@ which is a lot of value scale for a critic to fit — is legitimate. But the fix
 | 0.999 | 1000 steps | whole episode |
 
 γ=0.997 covers the escalation onset and more than halves the value scale, without
-touching a frozen artefact or the premise. Pair it with skrl's
-`value_preprocessor` (RunningStandardScaler), which is the standard answer to
-value-scale problems. λ=0.95 needs no action — it is already skrl's `gae_lambda`
-default.
+touching a frozen artefact or the premise. λ=0.95 needs no action — already
+skrl's `gae_lambda` default.
+
+**✅ APPLIED as `core.GAMMA = 0.997`, and the coupling is now structural.** The
+discount is *not* just a learner hyperparameter here: `reward.shaping` adds
+`γ·Φ(s′) − Φ(s)`, and that telescopes to a policy-independent constant — the
+whole reason PBRS is safe — **only if that γ equals the one the agent discounts
+with**. Env and learner reading different values would silently turn
+provably-neutral shaping into a bias on exactly the term chosen for being
+unbiased. So `skrl_wrapper.MAPPO_OVERRIDES` imports `core.GAMMA` rather than
+restating it, and a test asserts the post-expansion `MAPPO_CFG.discount_factor`
+equals `EnvConfig.gamma`.
+
+Still open for Block G: pair it with skrl's `value_preprocessor`
+(`RunningStandardScaler`), the standard answer to value-scale problems. Not wired
+here because the preprocessor needs the state width and belongs with the training
+config.
 
 ### What a scripted policy shows at D1
 
@@ -886,7 +899,7 @@ scripted policy through it. Five questions, all of which decide something:
       `src/env/test_device_parity.py`, validated against MPS; occlusion, routing
       and the full step all agree with CPU. Includes the CUDA-only
       `set_sync_debug_mode("error")` test that enforces the no-host-sync rule
-- [ ] Gate units written into [`AGENTS.md`](../AGENTS.md) so they cannot be
+- [x] Gate units written into [`AGENTS.md`](../AGENTS.md) so they cannot be
       re-opened; both reported by `bench_env.py`
 - [x] `src/env/core.py`: batched, pure-tensor `step()`; no `.item()`/`.cpu()`/
       `.numpy()`; no Python loop over environments

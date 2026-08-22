@@ -76,6 +76,19 @@ SENSOR_RANGE_M = 830.0  # non-binding ceiling; 99.8 % of sightlines are shorter
 SPAWN_RING_M = 5.0
 BATTERY_WH = 548.0
 
+# The discount, defined ONCE. It is not just a learner hyperparameter here: the
+# reward's PBRS term is `gamma*Phi(s') - Phi(s)`, and the invariance proof holds
+# only if that gamma equals the one the agent actually discounts with. Env and
+# learner reading different values silently turns provably-neutral shaping into a
+# bias. `src/training/skrl_wrapper.py` imports this, and a test asserts they agree.
+#
+# 0.997 rather than 0.999: horizon 1/(1-g) = 333 steps covers 55 % of a 600-step
+# episode, which reaches the escalation onset, while more than halving the value
+# scale the critic has to fit. AGENTS.md pins the band 0.997-0.999, so this is a
+# choice inside the range, not a change to it. 0.99 (skrl's default, horizon 100
+# steps) is blind to the hard end of the episode -- see docs/BLOCK_D.md.
+GAMMA = 0.997
+
 PTX_DBM = 30.0
 JAMMER_DBM = 30.0
 BANDWIDTH_HZ = 10e6
@@ -139,7 +152,7 @@ class EnvConfig:
     dt_s: float = DT_S
     occlusion_chunk: int = 512
     reuse_limit: int = 3
-    gamma: float = 0.999
+    gamma: float = GAMMA
     eval_routes: bool = False
     # Training wants auto-reset; the PettingZoo adapter must NOT have it, because
     # that API ends the episode and waits for an explicit reset(). Turning it off
