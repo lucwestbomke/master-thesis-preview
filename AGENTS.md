@@ -132,9 +132,11 @@ mean ± std — RL returns are not normally distributed. Never report single run
   acquire, and a random initial policy never reaches the tracking phase.
 - ⛔ **Sweep more than `λ`.** Other weights are pinned by behavioural orderings
   in [`docs/REWARD.md`](docs/REWARD.md).
-- ⛔ **Raise the altitude ceiling above ~150 m.** At 180 m only 10 % of A2A links
-  are blocked and at 230 m none are — F1's A2A component disappears and RQ1's
-  primary result changes silently. Measured:
+- ⛔ **Raise the altitude ceiling above 80 m.** It is not a comfort margin — it
+  is where the scenario stops being a swarm problem. A best-placed *single* drone
+  is mission-capable 3.3 % of the time at 80 m, 23 % at 100 m and 57 % at 120 m,
+  so raising it falsifies W1 ("one drone cannot do this"). Raising it also *weakens*
+  RQ1: A2A blockage falls 31 % → 25 % → 10 % at 80 / 120 / 180 m. Measured:
   [`scripts/measure_envelope.py`](scripts/measure_envelope.py).
 - ⛔ **Move to mmWave.** It makes RQ1 trivial (mmWave is textbook
   blockage-limited, so "occlusion matters" stops being a finding), needs
@@ -159,10 +161,10 @@ mean ± std — RL returns are not normally distributed. Never report single run
 | Jammer | 30 dBm in-band, rides the HVT | vehicle C-UAS barrage emitter |
 | Carrier / bandwidth | 3.5 GHz / **10 MHz** | so the 5 Mbps target actually binds |
 | Rate target | **5 Mbps** end-to-end | compressed HD EO/IR feed |
-| Flight altitude | 80 m nominal, band **40–120 m** | above fabric, below towers. Floor is a *model-validity* limit: below it 8–37 % of positions sit inside a building box, where occlusion's endpoint convention lets a drone see through its own building, and TR 36.777 stops at 22.5 m. Ceiling keeps 25 % of A2A links blocked — `TODO(verify)` its civil-UAS citation. [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
+| Flight altitude | band **40–80 m**, ceiling = nominal | Both ends are *derived*, not chosen. **Floor**: model validity — below 40 m, 8–37 % of positions sit inside a building box (where occlusion's endpoint convention lets a drone see through its own building) and TR 36.777 stops at 22.5 m. **Ceiling**: scenario validity — above it a best-placed *single* drone can do the mission (3.3 % at 80 m vs 57.4 % at 120 m), which dissolves W1 and with it the reason for a swarm. [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | Drone speed | 20 m/s cruise, 25 m/s dash | 1.4–1.8× margin over the HVT |
 | HVT | 300–500 m from MCV, drives away | chain escalates 1 → 2 → 3 hops |
-| Episode | **600 steps × 0.4 s** = 240 s | covers the escalation to 3 hops |
+| Episode | **600 steps × 0.4 s** = 240 s | covers the escalation to 3 hops. **Do not shorten**: at 120 s the HVT reaches only ~1000 m and *no* route enters the 3-hop regime (0.0 % vs 36.8 %). A route step is a fixed *displacement*, so changing `dt` also changes HVT speed and needs a re-bake of the frozen artefact |
 | Swarm | `N = 5` trained; 3/5/8 evaluated | |
 | Discount | **γ ≈ 0.997–0.999** | default 0.99 is blind to the hard end of the episode |
 

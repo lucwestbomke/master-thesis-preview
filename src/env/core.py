@@ -62,7 +62,10 @@ ARTEFACT = Path(__file__).resolve().parents[2] / "data" / "frankfurt_box.npz"
 # --- scenario, from AGENTS.md "Settled parameters". Do not re-derive here. ---
 BOX_HALF_M = 750.0
 ALT_MIN_M = 40.0  # model-validity floor, not a flight rule -- see BLOCK_D.md
-ALT_MAX_M = 120.0  # load-bearing for RQ1: above ~180 m A2A occlusion vanishes
+# The ceiling is DERIVED, not chosen: it is the altitude above which a single
+# best-placed drone can do the mission on its own, which would dissolve the
+# scenario. 3.3 % solo success at 80 m vs 57.4 % at 120 m. See docs/BLOCK_D.md.
+ALT_MAX_M = 80.0
 HVT_Z_M = 1.5
 MCV_Z_M = 2.0
 DT_S = 0.4

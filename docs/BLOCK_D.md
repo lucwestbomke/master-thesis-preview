@@ -73,7 +73,7 @@ cost is occlusion" assumption below now *matters more*, because if occlusion is
 0.32 ms and the scaffolding adds 3 ms, the profile has inverted and the
 per-stage breakdown is the only thing that would show it.
 
-### 2. Altitude band — 40 to 120 m
+### 2. Altitude band — 40 to 80 m, both ends derived
 
 Nothing in the model charges for altitude: `energy.propulsion_power_w` is a
 function of speed only, and a full 150 m climb costs 0.55 % of the pack. So the
@@ -83,15 +83,18 @@ after climb-out.** Both physical effects point upward:
 | altitude | A2A links blocked | HVT visible at 100–200 m offset |
 |---|---|---|
 | 40 m | 44.6 % | 22.7 % |
-| 80 m (nominal) | 31.2 % | 38.2 % |
-| **120 m (ceiling)** | **24.6 %** | **48.1 %** |
+| **80 m (ceiling)** | **31.2 %** | **38.2 %** |
+| 120 m | 24.6 % | 48.1 % |
 | 180 m | 10.2 % | 55.9 % |
 | 200 m | 2.6 % | 62.7 % |
 | 230 m | **0.0 %** | — |
 
-**The ceiling is load-bearing for RQ1.** Above ~180 m the tower cluster stops
-blocking anything, F1's A2A component disappears, and the primary result changes
-silently. 120 m keeps a quarter of A2A links blocked.
+**The ceiling is set by W1, not by A2A.** A2A occlusion alone would allow
+anything up to ~150 m. But above 80 m a best-placed *single* drone starts being
+able to do the mission unaided, which dissolves the reason the swarm exists — see
+"W1 versus the altitude ceiling" below, which is how this number was found. The
+two constraints point the same way, so 80 m satisfies both and A2A blockage is
+*higher* there (31 % vs 25 %) than at the 120 m originally proposed.
 
 **The floor is a model-validity envelope, not a flight rule.** A quadrotor can
 fly at 10 m; this simulator cannot describe it:
@@ -118,10 +121,16 @@ limit. Document the band as the region where the simulator is trustworthy.
 **Also add `W·v_z/η` climb power to `energy.py`** — real physics, cheap, and
 traceable. Do not expect it to bind.
 
-**`TODO(verify)`:** the ceiling wants an external citation the way Ptx and
-bandwidth have one. The civil UAS operating limit is the natural source and is
-believed to be 120 m AGL, but no regulation text has been read for this repo.
-Same standing as the TR 36.777 coefficients — **do not cite it until checked.**
+**The `TODO(verify)` is discharged.** The ceiling no longer needs a civil-UAS
+citation to stand up: it is derived from W1, which is the project's own scenario
+requirement, and that is a stronger justification than a regulation. Civil rules
+(the EU open category is believed to cap at 120 m AGL) are consistent with 80 m
+and can be mentioned as corroboration, but nothing rests on them.
+
+**Say the consequence out loud in the methodology:** with the ceiling equal to
+the nominal altitude and every gradient pointing up, the vertical action
+dimension is effectively degenerate. The swarm flies at 80 m and the interesting
+decisions are horizontal.
 
 ### 3. The cue stays, at 24 ego dims, and its justification changes
 
@@ -625,9 +634,9 @@ solo capability under *any* policy, which is far stronger than a scripted run.
 | 110 m | 89.6 % | 60.4 % | 37.9 % |
 | **120 m** (current) | 95.1 % | 74.4 % | **57.4 %** |
 
-**At the 120 m ceiling this file recommended, W1 fails.** A perfectly-placed
-single drone does the mission 57 % of the time at maximum separation. At 80 m it
-does so 3.3 % of the time and W1 holds comfortably.
+**At the 120 m ceiling this file originally recommended, W1 failed.** A
+perfectly-placed single drone did the mission 57 % of the time at maximum
+separation. At 80 m it does so 3.3 % of the time and W1 holds comfortably.
 
 This is a direct consequence of decision 2. The ceiling was chosen on the A2A
 occlusion constraint alone (keep the tower cluster blocking, so F1 has an A2A
@@ -643,7 +652,7 @@ buys two things:
 | solo drone mission-capable at 1336 m | **3.3 %** | 57.4 % |
 | HVT visible at 100–200 m offset | 38.2 % | 48.1 % |
 
-**Recommendation: move the band to 40–80 m.** It restores W1, *strengthens* the
+**✅ APPLIED: the band is 40–80 m.** It restores W1, *strengthens* the
 A2A occlusion RQ1 depends on, makes observation harder (which is the task), and
 lands the ceiling exactly on the 80 m nominal that
 [`AGENTS.md`](../AGENTS.md), [`PHYSICS.md`](PHYSICS.md), THESIS_PLAN §5 and
@@ -656,8 +665,62 @@ The cost: with ceiling = nominal, the vertical action dimension is fully
 degenerate (everything still pushes up). That was already expected at 120 m; at
 80 m it is certain. Worth stating in the methodology rather than hiding.
 
-**Not applied — this reverses an approved parameter and ripples into Chapters 3
-and 5, so it is a decision for the author, not a fix to land quietly.**
+**Applied, and it moved the policy numbers the way the reasoning predicts:** the
+task got harder (waypoint mission-capable 45.8 % → 40.4 %, random 28.7 % →
+19.3 %) and the chain got busier (3-hop share 3.2 % → **4.2 %**, and the random
+policy's link now binds on 5.3 points of episodes against 3.1 before). Lowering
+the ceiling exercises the relay premise more, which is the direction BLOCK_B's
+under-exercised-escalation worry wanted.
+
+### Episode shape: why 600 × 0.4 s stays
+
+A shorter, coarser episode was proposed — `dt = 0.5 s`, 240 steps, 120 s — so
+that a standard `γ = 0.99, λ = 0.95` would fit the horizon. Measured against the
+route bank, the three parts of that change have different verdicts.
+
+**Episode duration: reject.** The 240 s length is not a round number, it is what
+covers the 1 → 2 → 3 hop escalation, and the escalation is the premise.
+
+| episode | end sep p50 | routes reaching ≥1400 m (3-hop) |
+|---|---|---|
+| 120 s @ 0.4 s | 1011 m | 3.7 % |
+| **120 s @ 0.5 s** | 887 m | **0.0 %** |
+| **240 s @ 0.4 s** (current) | 1333 m | **36.8 %** |
+
+3-hop chains are already only 4.2 % of steps at 240 s. At 120 s the regime does
+not occur at all, F4's multi-hop rate-division rung would have nothing to act on,
+and the relay premise would weaken to a 2-hop story.
+
+**`dt`: reject, for a reason that is easy to miss.** A route step is a fixed
+*displacement*, not a duration — the bank is baked at 600 × 0.4 s. Changing `dt`
+without re-baking silently slows the HVT from 5.8 to 4.6 m/s; changing it *with*
+a re-bake touches `data/frankfurt_box.npz`, which is committed precisely so it
+never silently changes, and invalidates the joint calibration of
+`CONGESTION_FACTOR` and `MCV_MIN_REACH_M` against the escalation table. All that
+for a 20 % step reduction, and 0.4 → 0.5 s coarsens control against a 43 m
+observation envelope the drone already crosses in ~4 steps.
+
+**And it would not save anything.** Episode length does not drive compute: PPO
+rollout length (`rollouts`, default 16) is independent of episode length, and
+10 M samples is 10 M samples however they are partitioned. Shortening episodes
+changes the *task*, not the cost.
+
+**γ: use 0.997, and keep λ = 0.95.** The real motivation behind the proposal —
+that γ=0.999 gives an effective horizon of 1000 steps and returns of order 600,
+which is a lot of value scale for a critic to fit — is legitimate. But the fix is
+γ, not the episode. Within the band AGENTS.md already pins:
+
+| γ | horizon `1/(1−γ)` | share of a 600-step episode |
+|---|---|---|
+| 0.99 | 100 steps (40 s) | 17 % — blind to the hard end |
+| **0.997** | **333 steps (133 s)** | **55 %** |
+| 0.999 | 1000 steps | whole episode |
+
+γ=0.997 covers the escalation onset and more than halves the value scale, without
+touching a frozen artefact or the premise. Pair it with skrl's
+`value_preprocessor` (RunningStandardScaler), which is the standard answer to
+value-scale problems. λ=0.95 needs no action — it is already skrl's `gae_lambda`
+default.
 
 ### What a scripted policy shows at D1
 
@@ -667,8 +730,11 @@ Regenerate with `measure_envelope.py --only policy`:
 
 | policy | mission-capable | observed | chain occluded | 3-hop |
 |---|---|---|---|---|
-| random | 28.7 % | 31.8 % | 18.4 % | 3.3 % |
-| waypoint | **45.8 %** | 45.8 % | 18.5 % | 3.2 % |
+| random | 19.3 % | 24.6 % | 16.8 % | 2.6 % |
+| waypoint | **40.4 %** | 40.4 % | 18.0 % | 4.2 % |
+
+(At the superseded 120 m ceiling these read 28.7 / 45.8 % mission-capable and
+3.3 / 3.2 % 3-hop.)
 
 Battery over 239.6 s: 6.7 % chasing, 7.03 % hovering, against PHYSICS.md's ~7 %.
 
@@ -826,8 +892,8 @@ scripted policy through it. Five questions, all of which decide something:
       `.numpy()`; no Python loop over environments
 - [x] `routing.py` extended with batched path extraction (nodes **and** edges,
       the latter for RQ1's chain-occlusion metric); 25 tests
-- [x] Altitude band enforced at 40–120 m; climb power in `energy.py`; ceiling
-      citation **still `TODO(verify)`**
+- [x] Altitude band enforced at **40–80 m**, ceiling derived from W1; climb
+      power in `energy.py`; the ceiling's `TODO(verify)` **discharged**
 - [x] Ego observation at 24 dims with the persistent cue; `flat` packing at 108
       — `swarm_env.py`'s `OBS_DIM` still to update when the adapter is rewritten
 - [x] Curriculum axes as per-env tensors; `ENVIRONMENT.md`'s stage table amended

@@ -284,7 +284,7 @@ Fixed from sources outside this project, then the operating area solved for.
 | Ptx | 30 dBm (1 W), fixed | UAV tactical MANET radios (Silvus SC4200, Doodle Labs Helix, TrellisWare TW-950) are 0.5–2 W |
 | Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter, tens of watts over several hundred MHz |
 | Carrier / bandwidth | 3.5 GHz / 10 MHz | S/C-band tactical allocation |
-| Flight altitude | 80 m nominal, band **40–120 m** | above the fabric, below the towers; inside TR 36.777's 22.5–300 m band. The band is load-bearing for RQ1 — above ~180 m A2A occlusion vanishes ([`BLOCK_D.md`](BLOCK_D.md)) |
+| Flight altitude | band **40–80 m**, ceiling = nominal | above the fabric, below the towers; inside TR 36.777's 22.5–300 m band. The ceiling is *derived* from W1: above 80 m a best-placed single drone can do the mission alone (3.3 % → 57.4 % from 80 to 120 m), which would dissolve the swarm premise ([`BLOCK_D.md`](BLOCK_D.md)) |
 | Rate target | 5 Mbps end-to-end | compressed HD EO/IR feed |
 | Operating area | **1500 m** | single drone manages only ~1.7 Mbps at that range (fails); the swarm reaches ~24 Mbps (feasible) |
 

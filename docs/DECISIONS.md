@@ -218,7 +218,7 @@ policy** and `a_z` will saturate there. Measured
 
 Above ~180 m the tower cluster stops blocking anything, F1's A2A component
 disappears, and RQ1's primary result changes **silently**. Band fixed at
-**40–120 m**.
+**40–80 m** (see the W1 entry below, which tightened it further).
 
 The floor is a *model-validity* limit, not a flight rule: at 10 m altitude 37 %
 of positions sit inside a building box, where `occlusion.py`'s
@@ -230,6 +230,60 @@ to 22.5 m, silently substituting a different altitude. At 40 m containment is
 Rejected alongside: **an altitude energy penalty**. Physically correct to add
 (`W·v_z/η`, and it is being added), but it cannot bind — the climb is a one-off
 0.55 % of the battery. Only the ceiling controls this.
+
+### A 120 m altitude ceiling — it falsifies W1
+Proposed in Block D on the A2A-occlusion constraint alone: keep the tower cluster
+blocking air-to-air links so RQ1's F1 rung has an A2A component. That ruled out
+anything above ~150 m and 120 m looked safe. **The scenario constraint was not
+consulted, and it is tighter.**
+
+W1 — "a single drone cannot do the mission" — is what makes this a swarm problem
+at all. Measured on real geometry by placing one drone in the most favourable
+position available to it (hovering directly over the HVT, an upper bound on solo
+capability under *any* policy):
+
+| ceiling | solo mission-capable at 1336 m |
+|---|---|
+| 80 m | **3.3 %** |
+| 100 m | 23.2 % |
+| 120 m | **57.4 %** |
+
+At 120 m a perfectly-placed single drone does the mission most of the time and
+the swarm becomes an optimisation, not a necessity. **Band fixed at 40–80 m.**
+Both constraints point the same way, so nothing is traded: A2A blockage is 31 %
+at 80 m against 25 % at 120 m, so RQ1 gets *stronger*.
+
+Until this was measured, W1 rested on `scenario_design.py`'s analytic canyon rule
+(ground LoS within 0.625×altitude), which the Block D A2G measurement showed is
+more conservative than the real map. **Any future change to the altitude band
+must re-run `measure_envelope.py --only solo`.**
+
+Side benefit: the ceiling is now *derived* from the project's own scenario
+requirement rather than needing a civil-UAS citation, so that `TODO(verify)` is
+discharged. Regulation becomes corroboration.
+
+### Shorter, coarser episodes (`dt = 0.5 s`, 240 steps, 120 s)
+Proposed so that a standard `γ = 0.99, λ = 0.95` would fit the horizon. Rejected
+on three separate grounds; full tables in [`BLOCK_D.md`](BLOCK_D.md).
+
+1. **120 s truncates the escalation before it starts.** Routes reaching the
+   3-hop regime (≥1400 m): **36.8 % at 240 s, 3.7 % at 120 s @ 0.4 s, 0.0 % at
+   120 s @ 0.5 s.** 3-hop chains are already only ~4 % of steps at 240 s; at
+   120 s F4's multi-hop rate-division rung would have nothing to act on.
+2. **Changing `dt` means re-baking the frozen artefact.** A route step is a fixed
+   *displacement*: at `dt = 0.5` without a re-bake the HVT slows from 5.8 to
+   4.6 m/s, and *with* a re-bake `data/frankfurt_box.npz` changes and the joint
+   calibration of `CONGESTION_FACTOR` / `MCV_MIN_REACH_M` against the escalation
+   table is invalidated.
+3. **It saves nothing.** PPO's rollout length is independent of episode length,
+   so 10 M samples cost the same however they are partitioned. Shortening
+   episodes changes the task, not the cost.
+
+**The legitimate part of the proposal was γ**, and the fix is γ alone: **0.997**
+(horizon 333 steps, 55 % of the episode) rather than 0.999 (horizon 1000), which
+halves the value scale the critic must fit. Still inside the band AGENTS.md pins,
+so it is a choice within the range, not a change to it. λ = 0.95 is already
+skrl's `gae_lambda` default.
 
 ### mmWave instead of 3.5 GHz
 Raised as a way to make blockage matter more. It would do the opposite of what
@@ -314,5 +368,3 @@ the layer people reach for by default.
 | ~~Why one route lingered 333 steps on a ~240 m bridge~~ | ✅ **closed in Block D.** Measured over the whole bank (`measure_envelope.py --only route`): longest near-stationary run is **1 step**, p90 1, no route stalls >50 steps, slowest route still averages 5.77 m/s. `grow_outward` does not stall — the 333 steps were the bridge decks, and those are gone |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |
 | **The 120 m altitude ceiling's citation** | same standing. The band is fixed on measurement (above), but the ceiling wants an external basis the way Ptx and bandwidth have one. The civil UAS operating limit is the natural source and is *believed* to be 120 m AGL — **no regulation text has been read for this repo.** `TODO(verify)` |
-| ⚠️ **The altitude ceiling vs W1** | **Measured in Block D and currently unresolved.** At the 120 m ceiling a best-placed solo drone is mission-capable 57 % of the time at maximum separation, so "one drone cannot do the mission" — the reason the swarm exists — does not hold. At 80 m it is 3.3 % and W1 holds. Lowering the ceiling also *strengthens* A2A occlusion (31 % vs 25 % blocked). Recommendation and full table in [`BLOCK_D.md`](BLOCK_D.md); **needs an author decision before the March freeze** |
-| ~~Does the solo drone actually fail on the real map?~~ | superseded by the row above | `scenario_design.py` uses an analytic canyon rule (ground LoS within 0.625×altitude) that is **more conservative than the measured geometry** — 0 % where the map gives 48 % visibility at 100–200 m offset from 120 m. The "one drone cannot do the mission" premise (W1) therefore rests on a proxy. Block D re-runs it on real geometry; if the solo drone succeeds materially more than a few percent, the box or the escalation needs revisiting **before the March freeze** |

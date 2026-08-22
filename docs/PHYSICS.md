@@ -107,7 +107,7 @@ with [`scripts/scenario_design.py`](../scripts/scenario_design.py) and
 | Operating area | **1500 m** | solo drone manages ~1.7 Mbps (fails); swarm ~24 Mbps (feasible) |
 | Ptx | **30 dBm, fixed** | UAV tactical MANET radios are 0.5–2 W |
 | Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter |
-| Flight altitude | 80 m nominal, band **40–120 m** | above fabric, below towers; inside TR 36.777's 22.5–300 m band. Band derived below |
+| Flight altitude | band **40–80 m** | above fabric, below towers; inside TR 36.777's 22.5–300 m band. Both ends derived below |
 
 > ⚠️ **Never raise Ptx to make the energy term measurable.** At 40 dBm a
 > *blocked* A2A link still carries 15 Mbps over 2.8 km, so one drone spans any
@@ -154,7 +154,7 @@ slew cost"*, never as *"the cue is unnecessary"*. A minimum depression angle was
 considered and rejected — it would trade one unsourced constant for two, and a
 binding sensor parameter confounds RQ1 ([`DECISIONS.md`](DECISIONS.md)).
 
-## Altitude band — 40 to 120 m, and it is load-bearing
+## Altitude band — 40 to 80 m, and both ends are derived
 
 Nothing in the model charges for altitude (propulsion power is speed-only, a full
 climb is 0.55 % of the pack), and both physical effects improve with height, so
@@ -170,10 +170,23 @@ ceiling. Measured with the production kernel on the real boxes
 | 180 m | 10.2 % | 55.9 % | — |
 | 230 m | **0.0 %** | — | — |
 
-**Ceiling:** above ~180 m the tower cluster stops blocking air-to-air links at
-all, F1's A2A component disappears and RQ1's primary result changes silently.
-⚠️ `TODO(verify)` — the ceiling wants a civil-UAS citation; 120 m AGL is believed
-correct but no regulation text has been checked.
+**Ceiling — the scenario's own definition, not a comfort margin.** The mission is
+*defined* as one a single platform cannot accomplish; that is what makes it a
+swarm problem and it is condition **W1** in `scenario_design.py`. Measured on real
+geometry, a best-placed solo drone hovering over the HVT is mission-capable at
+maximum separation **3.3 % of the time at 80 m, 23.2 % at 100 m, 57.4 % at 120 m**.
+So 80 m is the altitude at which the scenario remains the scenario. Raising it
+also weakens RQ1 in the same motion, since A2A blockage falls from 31 % to 25 %.
+
+Civil UAS rules (the EU open category is believed to cap at 120 m AGL) are
+consistent with this but are **corroboration, not justification** — the number is
+derived from W1, so no regulatory citation is load-bearing and the earlier
+`TODO(verify)` is discharged.
+
+The consequence to state plainly in the methodology: with the ceiling equal to
+the nominal altitude, and every gradient pointing up, the vertical action
+dimension is effectively degenerate — the swarm flies at 80 m and the interesting
+decisions are horizontal.
 
 **Floor:** a *model-validity* limit, not a flight rule. At 10 m altitude 37 % of
 positions sit inside a building box, and `occlusion.py` ignores boxes containing

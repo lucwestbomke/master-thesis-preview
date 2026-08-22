@@ -328,7 +328,7 @@ def sec_solo(boxes: torch.Tensor, heights: torch.Tensor, art, routes: int = 512)
     print(
         f"{'alt':>6}{'t':>6}{'sep':>9}{'sees HVT':>11}{'link ok':>10}{'MISSION OK':>13}{'p50 Mbps':>11}"
     )
-    for alt in (80.0, ALT_MAX_M):
+    for alt in (ALT_MAX_M, 100.0, 120.0):
         for t in (0, 300, EPISODE_STEPS - 1):
             hvt = torch.cat([route[:, t, :], torch.full((routes, 1), HVT_Z)], 1)
             drone = torch.cat([route[:, t, :], torch.full((routes, 1), alt)], 1)
