@@ -28,7 +28,28 @@ import torch
 
 from .energy import DEFAULT_AIRFRAME, Rotorcraft, hover_power_w, radio_dc_power_w, total_power_w
 
-CAPACITY_THRESHOLD_MBPS = 5.0
+# The end-to-end rate the mission requires, defined ONCE and read by the env,
+# the metrics, the baselines and the renderer.
+#
+# **15, not 5.** Both are defensible for the stated payload -- 5 Mbps is a
+# single compressed HD stream, 15 is a dual EO/IR feed at low latency, which is
+# what a tracking ISR sortie actually carries -- and Block E measured what the
+# choice does to the task. At 5 Mbps the radio link NEVER binds: the chain's
+# bottleneck carries a median 37.6 Mbps, 8x the bar, so `mission_capable`
+# reduces to `observed` and the whole mission collapses to "put one drone over
+# the car". A scripted baseline reaches 93.2 % that way and the metric
+# saturates. Measured for B0 at N=5 on the eval split:
+#
+#     requirement    5      10     15     20     30     40   Mbps
+#     capable      93.3%  69.6%  54.7%  44.3%  19.4%  11.2%
+#     sensor-only ceiling 93.4 %
+#
+# At 15 the binding constraint moves from the SENSOR to the RELAY CHAIN -- the
+# drone can see the car and still cannot get the video home -- which is the
+# swarm problem this project exists to study, and it is invisible at 5. It also
+# revives F4's rate-division rung, inert at 5 because 37.6/3 still cleared it.
+# See docs/BLOCK_E.md.
+CAPACITY_THRESHOLD_MBPS = 15.0
 
 
 def hover_reference_power_w(craft: Rotorcraft) -> float:
@@ -64,7 +85,7 @@ class RewardWeights:
     w_observe: float = 0.35
     w_link: float = 0.40
     tau_clearance_m: float = 15.0  # ~building height, ~2 steps of travel
-    tau_capacity_mbps: float = 2.0  # 40% of threshold
+    tau_capacity_mbps: float = 6.0  # 40% of threshold; tracks CAPACITY_THRESHOLD_MBPS
     d_ref_m: float = 1500.0  # map scale
 
     # --- physical references for normalisation ---

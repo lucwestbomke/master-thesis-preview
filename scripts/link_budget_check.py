@@ -35,6 +35,7 @@ from env.channel import (
     noise_floor_dbm,
     pathloss_a2g_umi_av_db,
 )
+from env.reward import CAPACITY_THRESHOLD_MBPS
 
 FC_GHZ = 3.5
 BANDWIDTH_HZ = 10e6
@@ -97,7 +98,7 @@ def max_range_m(ptx_dbm: float, target_mbps: float, kind: str) -> float:
 def classify(
     map_size_m: float,
     ptx_dbm: float,
-    threshold_mbps: float = 5.0,
+    threshold_mbps: float = CAPACITY_THRESHOLD_MBPS,
     hops: int = 3,
     reuse_limit: int = 3,
 ) -> tuple[str, float, float]:
@@ -143,7 +144,7 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("SCENARIO VERDICT -- 3-hop chain, 5 Mbps end-to-end target")
+    print(f"SCENARIO VERDICT -- 3-hop chain, {CAPACITY_THRESHOLD_MBPS:.0f} Mbps end-to-end target")
     print("=" * 78)
     print(f"{'map m':>7} {'Ptx':>5} {'1-hop':>8} {'per-hop':>9}  verdict")
     for map_size in (300, 600, 1200, 2000):

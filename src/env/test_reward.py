@@ -34,6 +34,17 @@ N = 5
 W = RewardWeights()
 
 
+# Capacity levels, expressed RELATIVE to the requirement rather than as magic
+# numbers. When CAPACITY_THRESHOLD_MBPS moved 5 -> 15 (docs/BLOCK_E.md), the
+# hardcoded 9.0 and 12.0 in these stubs silently crossed from "comfortably
+# delivering" to "failing" and three tests inverted. Naming the intent means the
+# stubs track the constant instead of drifting behind it.
+GOOD = 2.4 * CAPACITY_THRESHOLD_MBPS  # a healthy chain
+OK = 1.8 * CAPACITY_THRESHOLD_MBPS  # delivering, with margin
+POOR = 0.4 * CAPACITY_THRESHOLD_MBPS  # chain up, below the bar
+BAD = 0.1 * CAPACITY_THRESHOLD_MBPS  # barely a link at all
+
+
 def _snap(observed, cap, dist, clear, speed, accel=1.0, battery=0.8):
     """One timestep for a single environment with N drones."""
     return Snapshot(
@@ -69,7 +80,7 @@ def fixed_formation(steps=100):
         ok = (t % 10) < 5  # link holds half the time
         seen = (t % 10) < 6  # sight held a little more often
         out.append(
-            _snap(seen, 9.0 if ok else 1.5, 60 if seen else 200, 20 if seen else -20, 8.0, 1.0)
+            _snap(seen, OK if ok else POOR, 60 if seen else 200, 20 if seen else -20, 8.0, 1.0)
         )
     return out
 
@@ -81,7 +92,7 @@ def heuristic(steps=100):
         ok = (t % 20) < 17
         seen = (t % 10) < 9
         out.append(
-            _snap(seen, 12.0 if ok else 2.0, 30 if seen else 90, 25 if seen else -5, 14.0, 2.0)
+            _snap(seen, GOOD if ok else POOR, 30 if seen else 90, 25 if seen else -5, 14.0, 2.0)
         )
     return out
 
@@ -133,14 +144,14 @@ def test_shaping_depends_only_on_endpoints():
     """The property that makes PBRS safe. Two trajectories, same start and end,
     wildly different middles -- identical total shaping."""
     start = _snap(False, 0.0, 1400, -60, 0.0)
-    end = _snap(True, 20.0, 30, 30, 12.0)
-    direct = [start, _snap(True, 8.0, 300, 5, 15.0), end]
+    end = _snap(True, 4.0 * CAPACITY_THRESHOLD_MBPS, 30, 30, 12.0)
+    direct = [start, _snap(True, OK, 300, 5, 15.0), end]
     wandering = [
         start,
         _snap(False, 0.0, 200, -40, 20.0),
-        _snap(True, 15.0, 40, 25, 10.0),
+        _snap(True, GOOD, 40, 25, 10.0),
         _snap(False, 0.0, 900, -50, 22.0),  # throws it all away
-        _snap(True, 3.0, 120, 10, 18.0),
+        _snap(True, POOR, 120, 10, 18.0),
         end,
     ]
 
@@ -157,7 +168,7 @@ def test_shaping_depends_only_on_endpoints():
 def test_a_round_trip_earns_nothing():
     """Nothing to farm: returning to where you started returns the potential."""
     a = _snap(False, 0.0, 800, -30, 10.0)
-    b = _snap(True, 10.0, 40, 20, 10.0)
+    b = _snap(True, OK, 40, 20, 10.0)
     out = shaping(a, b, W, gamma=1.0).item()
     back = shaping(b, a, W, gamma=1.0).item()
     assert out + back == pytest.approx(0.0, abs=1e-6)
@@ -166,8 +177,8 @@ def test_a_round_trip_earns_nothing():
 
 def test_terminal_potential_is_zeroed():
     """Required by the invariance proof -- otherwise gamma^T*Phi(s_T) survives."""
-    a = _snap(True, 10.0, 40, 20, 10.0)
-    b = _snap(True, 12.0, 35, 22, 10.0)
+    a = _snap(True, OK, 40, 20, 10.0)
+    b = _snap(True, GOOD, 35, 22, 10.0)
     normal = shaping(a, b, W, 0.999).item()
     terminal = shaping(a, b, W, 0.999, next_is_terminal=torch.tensor([True])).item()
     assert terminal == pytest.approx(-potential(a, W).item(), abs=1e-5)
@@ -192,7 +203,7 @@ def test_each_potential_component_moves_independently():
     base = _snap(False, 0.0, 1400, -60, 0.0)
     closer = _snap(False, 0.0, 700, -60, 0.0)
     clearer = _snap(False, 0.0, 1400, 20, 0.0)
-    linked = _snap(False, 12.0, 1400, -60, 0.0)
+    linked = _snap(False, GOOD, 1400, -60, 0.0)
     p0 = potential(base, W).item()
     assert potential(closer, W).item() > p0
     assert potential(clearer, W).item() > p0
@@ -200,7 +211,7 @@ def test_each_potential_component_moves_independently():
 
 
 def test_potential_is_bounded_by_its_scale():
-    best = _snap(True, 80.0, 0, 200, 0.0)
+    best = _snap(True, 5.0 * CAPACITY_THRESHOLD_MBPS, 0, 200, 0.0)
     worst = _snap(False, 0.0, 5000, -300, 0.0)
     assert potential(worst, W).item() >= 0.0
     assert potential(best, W).item() <= W.potential_scale + 1e-6
@@ -219,8 +230,8 @@ def test_clearance_matters_more_than_distance_for_observation():
 
 def test_capacity_potential_gives_gradient_below_threshold():
     """Where the binary indicator has none."""
-    dead = _snap(False, 0.5, 500, 0, 10.0)
-    improving = _snap(False, 3.0, 500, 0, 10.0)
+    dead = _snap(False, BAD * 0.3, 500, 0, 10.0)
+    improving = _snap(False, POOR, 500, 0, 10.0)
     assert potential(improving, W).item() > potential(dead, W).item() + 0.05
 
 
@@ -230,9 +241,9 @@ def test_capacity_potential_gives_gradient_below_threshold():
 
 
 def test_mission_capable_needs_both_conditions():
-    assert mission_capable(_snap(True, 10.0, 30, 20, 10.0)).item()
-    assert not mission_capable(_snap(True, 2.0, 30, 20, 10.0)).item()
-    assert not mission_capable(_snap(False, 10.0, 30, 20, 10.0)).item()
+    assert mission_capable(_snap(True, OK, 30, 20, 10.0)).item()
+    assert not mission_capable(_snap(True, POOR, 30, 20, 10.0)).item()
+    assert not mission_capable(_snap(False, OK, 30, 20, 10.0)).item()
 
 
 def test_mission_threshold_is_inclusive():
@@ -256,7 +267,7 @@ def test_cruising_costs_less_than_hovering():
 def test_battery_variance_penalises_spread():
     even = Snapshot(
         observed=torch.tensor([True]),
-        e2e_capacity_mbps=torch.tensor([10.0]),
+        e2e_capacity_mbps=torch.tensor([OK]),
         nearest_dist_m=torch.tensor([50.0]),
         best_clearance_m=torch.tensor([20.0]),
         battery=torch.full((1, N), 0.6),
@@ -265,7 +276,7 @@ def test_battery_variance_penalises_spread():
     )
     spread = Snapshot(
         observed=torch.tensor([True]),
-        e2e_capacity_mbps=torch.tensor([10.0]),
+        e2e_capacity_mbps=torch.tensor([OK]),
         nearest_dist_m=torch.tensor([50.0]),
         best_clearance_m=torch.tensor([20.0]),
         battery=torch.tensor([[0.1, 0.35, 0.6, 0.85, 1.0]]),
@@ -280,7 +291,7 @@ def test_all_hover_does_not_beat_the_mission():
     stay identical, Var(B)=0 and that term scores perfectly. Mission reward
     must dominate it."""
     hovering_balanced = _snap(False, 0.0, 1400, -60, 0.0, accel=0.0, battery=0.7)
-    working = _snap(True, 12.0, 30, 25, 14.0, accel=2.0, battery=0.7)
+    working = _snap(True, GOOD, 30, 25, 14.0, accel=2.0, battery=0.7)
     assert team_reward(working, W).item() > team_reward(hovering_balanced, W).item()
 
 
@@ -339,7 +350,7 @@ def test_team_terms_are_shared_and_individual_terms_are_not():
 
     snap = Snapshot(
         observed=torch.tensor([True]),
-        e2e_capacity_mbps=torch.tensor([10.0]),
+        e2e_capacity_mbps=torch.tensor([OK]),
         nearest_dist_m=torch.tensor([50.0]),
         best_clearance_m=torch.tensor([20.0]),
         battery=torch.full((1, N), 0.6),

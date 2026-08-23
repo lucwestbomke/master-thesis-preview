@@ -38,6 +38,7 @@ from env.channel import (
     received_power_dbm,
     sinr_db,
 )
+from env.reward import CAPACITY_THRESHOLD_MBPS
 from env.routing import best_relay_capacity
 
 # --------------------------------------------------------------------------- #
@@ -47,7 +48,10 @@ from env.routing import best_relay_capacity
 FC_GHZ = 3.5  # S/C-band tactical MANET allocation
 BANDWIDTH_HZ = 10e6  # single 10 MHz channel
 NOISE_FIGURE_DB = 7.0  # typical COTS receiver
-THRESHOLD_MBPS = 5.0  # compressed HD EO/IR feed
+# The mission rate requirement, imported rather than restated. Three copies of
+# this number existed before Block E raised it 5 -> 15 Mbps, and a stale copy
+# here would silently re-derive the altitude ceiling against the old bar.
+THRESHOLD_MBPS = CAPACITY_THRESHOLD_MBPS  # dual EO/IR feed, low latency
 
 # Ptx ceiling: UAV-mounted tactical MANET radios (Silvus SC4200, Doodle Labs
 # Helix, TrellisWare TW-950 class) transmit 0.5-2 W. 1 W = 30 dBm.

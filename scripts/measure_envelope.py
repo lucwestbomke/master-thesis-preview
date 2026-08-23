@@ -61,6 +61,7 @@ from src.env.channel import (
 )
 from src.env.core import ALT_MAX_M, BatchedSwarmEnv, EnvConfig
 from src.env.occlusion import segment_clearance
+from src.env.reward import CAPACITY_THRESHOLD_MBPS
 
 ARTEFACT = Path(__file__).resolve().parent.parent / "data" / "frankfurt_box.npz"
 
@@ -76,7 +77,10 @@ DRONE_CRUISE_MS = 20.0
 PTX_DBM = 30.0
 BANDWIDTH_HZ = 10e6
 JAMMER_DBM = 30.0
-THRESHOLD_MBPS = 5.0
+# The mission rate requirement, imported rather than restated. Three copies of
+# this number existed before Block E raised it 5 -> 15 Mbps, and a stale copy
+# here would silently re-derive the altitude ceiling against the old bar.
+THRESHOLD_MBPS = CAPACITY_THRESHOLD_MBPS
 
 
 def load() -> tuple[torch.Tensor, torch.Tensor, dict]:
@@ -352,7 +356,12 @@ def sec_solo(boxes: torch.Tensor, heights: torch.Tensor, art, routes: int = 512)
                 f"{ok.float().mean() * 100:>9.1f}%{(sees & ok).float().mean() * 100:>12.1f}%"
                 f"{cap.median():>11.1f}"
             )
-    print("W1 holds only if MISSION OK stays low once the HVT is far out.")
+    print(
+        "W1 holds only if MISSION OK stays low once the HVT is far out.\n"
+        "NOTE: at the 15 Mbps requirement W1 holds at EVERY altitude in and above the\n"
+        "band (0.4-0.8 % at 1336 m), so it no longer discriminates between ceilings and\n"
+        "no longer pins the 80 m ceiling -- see docs/DECISIONS.md."
+    )
 
 
 def sec_route(art) -> None:
@@ -444,7 +453,13 @@ def sec_policy(num_envs: int = 64, num_drones: int = 5) -> None:
             f"{name:<12}{cap / t * 100:>16.1f}%{seen / t * 100:>10.1f}%"
             f"{occl / t * 100:>11.1f}%{hops[3] / hops.sum() * 100:>7.1f}%"
         )
-    print("Observed == mission-capable means the LINK never binds, only observation.")
+    print(
+        "The gap between observed and mission-capable is the LINK binding. At the old\n"
+        "5 Mbps bar the two columns were identical for every policy -- the chain always\n"
+        "delivered once anything was seen, so the relay premise was never exercised.\n"
+        f"At {THRESHOLD_MBPS:.0f} Mbps they separate, which is why the bar was raised "
+        "(docs/BLOCK_E.md)."
+    )
 
 
 SECTIONS = {
