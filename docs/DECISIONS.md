@@ -262,6 +262,49 @@ Side benefit: the ceiling is now *derived* from the project's own scenario
 requirement rather than needing a civil-UAS citation, so that `TODO(verify)` is
 discharged. Regulation becomes corroboration.
 
+### Raising the HVT speed (`CONGESTION_FACTOR`) — considered, not done
+Asked in Block E: the target's realised median is **5.8 m/s (21 km/h)** after
+`CONGESTION_FACTOR = 0.70`, against a 20 m/s drone — a 3.4× margin that makes
+keeping up trivial. Is the congestion factor too strong?
+
+Measured with `speed_scale`, scored over the first 400 steps so the route running
+out cannot confound it:
+
+| `speed_scale` | ~m/s | mission-capable | observed |
+|---|---|---|---|
+| 1.00 | 5.8 | 65.2 % | 90.0 % |
+| 1.25 | 7.2 | 59.3 % | 89.2 % |
+| 1.50 | 8.7 | 52.4 % | 87.7 % |
+
+**A faster target barely affects tracking** — `observed` falls 2.3 points across
+a 50 % speed increase, because a 20 m/s drone keeps up with an 8.7 m/s car
+easily. It costs 12.8 points of *mission* success, and it does so by covering
+more ground, opening the separation faster, and stressing the **chain**.
+
+So it is the same lever as the rate requirement, pulled less defensibly:
+
+1. **It buys chain stress, which is already bought.** The 5 → 15 Mbps change
+   did that, at no cost to the frozen artefact.
+2. **It requires a re-bake.** A route step is a fixed *displacement*, so changing
+   the speed means regenerating `data/frankfurt_box.npz` and re-validating
+   BLOCK_B's joint calibration of `CONGESTION_FACTOR` against `MCV_MIN_REACH_M`.
+3. **It is less realistic, not more.** 21 km/h is a normal average speed for a
+   vehicle crossing a dense European city centre with intersections and signals.
+   31 km/h (`speed_scale = 1.5`) is not.
+4. **It does not fix RQ3.** Observation stays ~88 % solved, so the observer role
+   still hands over rarely; the thin-handoff problem was solved by re-pointing
+   RQ3, not by speed.
+
+**Keep `CONGESTION_FACTOR = 0.70`.**
+
+> ⚠️ **One inconsistency this exposed, worth fixing in the write-up.** AGENTS.md
+> justifies the drone speed as a "**1.4–1.8× margin over the HVT**", computed
+> against the *free-flow class cap* of 13.9 m/s. The baked bank's realised median
+> is 5.8 m/s, so the **actual** margin is ~3.4×. Neither number is wrong — the cap
+> is the cap — but quoting 1.4× implies the target typically moves at 13.9 m/s,
+> and it does not. Say "1.4× against the fastest permitted road class, ~3.4×
+> against the realised median".
+
 ### Promoting N=3 to a training condition — proposed, then killed by measurement
 Raised in Block E on the reasonable-sounding grounds that N = 3 is the hardest
 condition (B0 36.4 % against 57.2 % at N = 5) and therefore the place a learned
@@ -416,7 +459,42 @@ of thing an examiner checks. W1 itself is now far more robust than it was, which
 is the compensating gain.
 
 **Do not raise the ceiling on the strength of the new W1 numbers.** They permit
-it; A2A occlusion still forbids it, and that constraint is the one RQ1 rests on.
+it; A2A occlusion still forbids it — and that is now measured end to end rather
+than inferred from a link statistic.
+
+#### The replacement argument, and it is stronger than the one it replaces
+
+`eval_baseline.py --only ceiling`, B0 at 15 Mbps, 6 seeds on the eval split:
+
+| ceiling | mission-capable | observed | A2A links blocked |
+|---|---|---|---|
+| **80 m** | **56.6 %** | 93.0 % | **31.2 %** |
+| 100 m | 64.2 % | 93.3 % | ~28 % |
+| 120 m | 74.5 % | 94.6 % | 24.6 % |
+| 150 m | 80.8 % | 95.1 % | ~17 % |
+
+**`observed` barely moves — 93.0 → 95.1 across 70 m of climb.** Climbing does
+almost nothing for the sensor, because a drone over the target already sees it.
+Nearly the entire 24-point gain in mission success is **air-to-air**: higher
+relays have clearer links to each other.
+
+Which is to say: **the altitude ceiling is the primary control on how much of
+RQ1's independent variable exists.** Raising it to 120 m hands back ~18 points of
+mission success by deleting the occlusion under study. That is a *construct
+validity* argument, and it beats the W1 one it replaces in three ways — it is
+measured on end-to-end policy performance rather than on a blockage statistic; it
+does not depend on a scenario premise that could shift again; and it points at
+the thesis's own independent variable rather than at a side condition.
+
+Neither external limit binds: **TR 36.777 is valid to 300 m** and the EU open
+category caps at **120 m AGL**, so the research constraint is tighter than both.
+That is the right shape — the number is set by what the experiment needs, and
+regulation merely fails to contradict it.
+
+**State this in the methodology.** B0's 57 % is partly a consequence of the
+altitude choice; the same controller scores 75 % at 120 m. Reporting the number
+without the band is meaningless, and an examiner who asks "why 80 m?" now gets a
+measured answer instead of a regulatory one.
 
 ### Shorter, coarser episodes (`dt = 0.5 s`, 240 steps, 120 s)
 Proposed so that a standard `γ = 0.99, λ = 0.95` would fit the horizon. Rejected

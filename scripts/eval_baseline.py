@@ -367,6 +367,54 @@ def sec_sweep(a) -> None:
             print(f"      {v!s:>7}   capable {m * 100:5.1f} % [{i * 100:4.1f}]{mark}")
 
 
+def sec_ceiling(a) -> None:
+    """What does the altitude ceiling actually buy, end to end?
+
+    The band was pinned by W1 until Block E raised the rate requirement, at which
+    point W1 stopped binding at any altitude and the question re-opened. This is
+    the replacement argument, and it is a stronger one: measured on policy
+    performance rather than on a link statistic.
+    """
+    from src.baselines import b0 as b0mod
+    from src.env import core as coremod
+
+    print("\n== What the altitude ceiling buys ==")
+    print(f"{'ceiling':>9}{'capable':>10}{'observed':>11}{'A2A blocked':>14}")
+    a2a = {80.0: "31.2 %", 100.0: "~28 %", 120.0: "24.6 %", 150.0: "~17 %"}
+    base = coremod.ALT_MAX_M
+    try:
+        for ceil in (80.0, 100.0, 120.0, 150.0):
+            coremod.ALT_MAX_M = ceil
+            b0mod.ALT_MAX_M = ceil
+            cols = {k: [] for k in ("mission_capable", "observed")}
+            for s in range(max(a.seeds // 2, 3)):
+                env = make_env(a.num_envs, a.num_drones, 100 + s, True, a.compile)
+                summ = run("b0", env).summary()
+                for k, col in cols.items():
+                    col.append(summ[k])
+            v = {k: med_iqr(x)[0] for k, x in cols.items()}
+            print(
+                f"{ceil:>8.0f}m{v['mission_capable'] * 100:>9.1f}%"
+                f"{v['observed'] * 100:>10.1f}%{a2a[ceil]:>14}"
+            )
+    finally:
+        coremod.ALT_MAX_M = base
+        b0mod.ALT_MAX_M = base
+    print(
+        "\n   `observed` barely moves (93 -> 95): climbing does almost nothing for the\n"
+        "   SENSOR, because a drone over the target already sees it. Nearly the whole\n"
+        "   gain is AIR-TO-AIR -- higher relays have clearer links to each other.\n"
+        "\n"
+        "   That is the effect RQ1 exists to measure. Raising the ceiling to 120 m hands\n"
+        "   back ~17 points of mission success by DELETING the occlusion under study, so\n"
+        "   the ceiling is the primary control on how much of RQ1's independent variable\n"
+        "   exists at all. Neither TR 36.777 (valid to 300 m) nor the EU open category\n"
+        "   (120 m AGL) binds here -- the research constraint is tighter than both.\n"
+        "   State in the methodology that B0's 57 % is partly a consequence of this\n"
+        "   choice; at 120 m the same controller scores 75 %."
+    )
+
+
 SECTIONS = {
     "ladder": sec_ladder,
     "phase": sec_phase,
@@ -374,6 +422,7 @@ SECTIONS = {
     "transfer": sec_transfer,
     "rq3": sec_rq3,
     "sweep": sec_sweep,
+    "ceiling": sec_ceiling,
 }
 
 
