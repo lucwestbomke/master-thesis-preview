@@ -38,7 +38,7 @@ simulator must include.
 | Occlusion that is real, not a parameter | actual Frankfurt footprints and heights | **B** ✅ |
 | Occlusion computed fast enough to train against | batched torch ray-vs-box, 2.5D | **C** ✅ |
 | Enough samples to make 45 runs affordable | batched env at ≥1000 steps/s | **D** |
-| Proof MARL earns its keep | a scripted geometric baseline (B0) | **E** |
+| Proof MARL earns its keep | a scripted geometric baseline (B0) | **E** ✅ |
 | The independent variable itself | F0–F4 as config flags on one env | **F** |
 | Policies to compare | MAPPO + a curriculum that actually learns | **G** |
 | A channel model a telecoms examiner accepts | offline Sionna agreement plot | **H** |
@@ -90,7 +90,7 @@ was measured and decided.
 | **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
 | **C** ✅ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry ✅ | too slow → blows D's throughput gate. Fusion via `torch.compile` is what makes it viable |
 | **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** (transitions, not batched calls) and **≤3 h per 10 M-step run end-to-end** | below gate → 45 runs unaffordable, matrix must shrink |
-| **E** | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
+| **E** ✅ | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
 | **F** | F0–F4 as config flags on one env | **RQ1 directly** | all five run; `R` calibrated under F4 | uncalibrated `R` → RQ1 comparison is meaningless |
 | **G** | MAPPO + curriculum | everything | one toy run beats random | nothing learns → the usual place projects stall |
 | **H** | offline Sionna agreement plot | methodology credibility | plot exists | — (optional, cut freely) |
@@ -133,8 +133,8 @@ B ████████████████████  done   geometry 
 C ████████████████████  done   occlusion, validated + benchmarked
 D ██████████████████░░  built  env core + adapter + skrl seam; gate met 3170x
                               (CUDA re-run of the full env still pending)
-E ░░░░░░░░░░░░░░░░░░░░  next
-F ░░░░░░░░░░░░░░░░░░░░
+E ████████████████████  done   B0 = 57.2 %; renderer; rate target 5 -> 15 Mbps
+F ░░░░░░░░░░░░░░░░░░░░  next   F3->F4 is a LARGE effect (+26.5 pp), not a null
 G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall
 H ░░░░░░░░░░░░░░░░░░░░
 ```
@@ -143,6 +143,36 @@ H ░░░░░░░░░░░░░░░░░░░░
 Block B replaced its remaining assumptions with measurements (canyon ratio,
 sightline distribution, observation envelope) and produced the box figure. That
 is the single biggest scheduling win available before the March 2027 freeze.
+
+**Block E changed a settled parameter, and it changed the shape of the whole
+experiment.** B0 — the like-for-like scripted control, on the same observation
+the actors get — exposed that at the original **5 Mbps** requirement the radio
+link never bound: the chain carried 8× the bar, `mission_capable` was identical
+to `observed` for every policy, and a script scored 93 % with the metric
+saturated. **The rate requirement is now 15 Mbps** and the experiment is properly
+shaped. Detail in [`BLOCK_E.md`](BLOCK_E.md), routed through
+[`DECISIONS.md`](DECISIONS.md):
+
+1. **The relay chain is now the binding constraint.** B0 reaches 57.2 %
+   mission-capable against a 93.0 % *sensor* ceiling — a 36-point gap that is
+   pure relay geometry, and did not exist at 5 Mbps.
+2. **Difficulty is now at the end of the episode**, where the escalation lives
+   and where γ = 0.997 reaches: capable peaks at 84 % around t = 40 s and decays
+   to 35 % by t = 240 s, while observed holds at 98 %.
+3. **N-scaling is monotone** — 36.4 / 57.2 / 74.3 % at N = 3/5/8, all of it the
+   chain. RQ2's off-N columns now measure something — and **the weight belongs at
+   N = 8, not N = 3**: control is worth +25.9 pp there against +3.2 pp at N = 3.
+   Hardness is not headroom.
+4. **RQ3 is re-pointed** from observer handoff (~0.9 per episode, too thin) to
+   **relay-chain reconfiguration** (~52 per episode), which is driven by the
+   occlusion physics RQ1 studies. E3a's ablation changes with it.
+5. **F3 → F4 is a large effect** (+26.5 pp), not the null predicted at 5 Mbps.
+6. **The altitude ceiling is no longer derived from W1** — W1 now holds at every
+   altitude. 80 m stands on A2A-occlusion grounds instead. Chapter 3 must say so.
+7. **Control beats information decisively.** `geodesic` → `B0` is +10.1 pp;
+   `B0` → `B0-oracle` is −0.4 pp, i.e. perfect target knowledge is worth nothing.
+
+⚠️ **Every Block D number is at 5 Mbps and is not comparable to a Block E one.**
 
 **Now → Feb 2027:** Phase 0. Build B–H. Write Chapters 2 and 3 in parallel.
 **End Mar 2027:** environment freeze. Pilots before, thesis material after.

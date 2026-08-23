@@ -89,10 +89,34 @@ Sources are all drones currently holding a valid HVT observation; if none, missi
 capacity is 0. Fully batched, exact, no per-env Python loop.
 
 ## Bandwidth and threshold — chosen so the constraint actually binds
-`B = 10 MHz`, threshold `5 Mbps` end-to-end. A 3-hop chain then needs **+4.8 dB
-SINR per hop**. At the originally-specified 20 MHz a single hop needed only
-−7.2 dB, which a swarm satisfies by accident and which makes the jammer
-decorative.
+`B = 10 MHz`, threshold **`15 Mbps`** end-to-end. At the originally-specified
+20 MHz a single hop needed only −7.2 dB SINR, which a swarm satisfies by accident
+and which makes the jammer decorative. Narrowing to 10 MHz fixed that for the
+*single-hop* case.
+
+> ⚠️ **The threshold was 5 Mbps and is now 15**, changed in Block E on measured
+> evidence rather than on the link-budget argument above — which turned out to be
+> necessary but not sufficient. At 10 MHz / 5 Mbps a 3-hop chain needs +4.8 dB
+> SINR per hop, which sounds binding and is not: measured over real geometry the
+> chain's *bottleneck* carries a median **37.6 Mbps, 8× the bar**, so
+> `mission_capable` reduced to `observed` for every policy tested, the multi-hop
+> divisor `min(n,3)` changed nothing, and a scripted baseline reached 93 %.
+>
+> At 15 Mbps the bottleneck sits at ~3× the bar, the divisor flips 27 % of
+> chain-steps, and the binding constraint moves from the sensor to the relay
+> chain. Both values are defensible for the payload — 5 Mbps is one compressed HD
+> stream, 15 is a dual EO/IR feed at low latency — so this chose among defensible
+> values on measurement rather than inventing one.
+>
+> **The lesson for anyone re-deriving this**: a per-hop SINR margin computed at
+> the *threshold* says what the chain must clear, not what it actually carries.
+> Only the second number tells you whether the constraint binds. Full ledger in
+> [`DECISIONS.md`](DECISIONS.md), measurements in [`BLOCK_E.md`](BLOCK_E.md).
+
+The constant lives in exactly one place, `src/env/reward.py`
+(`CAPACITY_THRESHOLD_MBPS`), and everything else imports it — three scripts kept
+private copies before Block E, which is how a stale bar silently re-derives the
+altitude ceiling.
 
 ## Scenario — derived, not chosen
 Every parameter is fixed from an external source, and the operating area is then

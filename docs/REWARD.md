@@ -11,7 +11,7 @@ policies and asserting their ranking.
 
 ## Structure
 ```
-r =  w_mission · [observed AND C_e2e ≥ 5 Mbps]     # team — IS the headline metric
+r =  w_mission · [observed AND C_e2e ≥ 15 Mbps]    # team — IS the headline metric
    + γ·Φ(s′) − Φ(s)                                 # potential-based shaping
    − w_idle    · [HVT not observed]                 # team
    − w_energy  · normalised power draw              # individual
@@ -51,7 +51,7 @@ Two rules:
 |---|---|---|
 | `Φ_approach` | `1 − min(d_min, D_ref)/D_ref`, `d_min` = nearest drone→HVT, `D_ref` ≈ map diagonal | coarse; non-zero anywhere on the map so the agent is never blind |
 | `Φ_observe` | `sigmoid(clearance_best / τ_c)`, `τ_c ≈ 15 m` | fine; rewards correct *geometry*, not mere proximity |
-| `Φ_link` | `sigmoid((C_e2e − 5.0) / τ_l)`, `τ_l ≈ 2 Mbps` | gradient below threshold, where the binary indicator has none |
+| `Φ_link` | `sigmoid((C_e2e − 15.0) / τ_l)`, `τ_l = 6 Mbps` | gradient below threshold, where the binary indicator has none |
 
 Each lands in `[0,1]`. Suggested `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
 the link, which is the hardest and last-learned stage.
@@ -72,9 +72,13 @@ Three traps this avoids:
   start, when both are ≈0 and neither can improve without the other. **Sum.**
 
 > ⚠️ `τ_c` and `τ_l` are starting values reasoned from geometry (22 m buildings,
-> 8 m of travel per step) and from the threshold (40 % of 5 Mbps). **Re-tune them
-> against the real env once Block D runs** — safely, since they live in the
-> potential.
+> 8 m of travel per step) and from the threshold (40 % of it, so `τ_l` moved
+> 2 → 6 Mbps when the requirement moved 5 → 15). **Re-tune them
+> in Block G, not before** — safely, since they live in the potential and cannot
+> move the optimum. Block E deliberately did not: it now supplies the empirical
+> `clearance_best` and `C_e2e` distributions the retune needs, but the thresholds
+> can only affect *learning speed*, which cannot be measured until a learner
+> exists ([`DECISIONS.md`](DECISIONS.md)).
 
 ## Setting the remaining weights — by behavioural ordering, not sweeping
 Write down pairs of behaviours you know how to rank, and require the reward to
@@ -128,8 +132,23 @@ PPO default `γ=0.99` the horizon is 100 steps, so the agent is structurally bli
 to the hard part and would optimise the easy opening. Use **`γ ≈ 0.997–0.999`**.
 
 ## Validate the reward before training anything
-`test_reward.py` scores four scripted policies and asserts the ranking. Current
-values (100 steps, mean over 5 agents):
+`test_reward.py` scores four scripted policies and asserts the ranking.
+
+> ⚠️ **The table below is synthetic.** The four "policies" are hand-written
+> `Snapshot` stubs, which is the right scope for a unit test of `reward.py` but
+> means the ordering was never checked against states the environment actually
+> produces. Block E closed that loop:
+> **`tests/test_baseline_reward_ordering.py`** scores real policies through the
+> real env and asserts the same ranking — B0 (+230) > B0-geodesic (+164) >
+> random (−164) > lazy (< 0), 5 seeds on the eval split. Quote the real numbers
+> in the thesis, not these.
+>
+> The stubs are also why the requirement change was not silent: their capacities
+> were magic numbers sized against a 5 Mbps bar, and at 15 they crossed it and
+> inverted three tests. They now express intent (`GOOD`, `OK`, `POOR`) relative
+> to `CAPACITY_THRESHOLD_MBPS` instead of restating it.
+
+Current stub values (100 steps, mean over 5 agents):
 
 | Policy | Return | Per step |
 |---|---|---|

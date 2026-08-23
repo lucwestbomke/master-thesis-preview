@@ -1,5 +1,14 @@
 # Block D — batched env core
 
+> ⚠️ **Every number in this file was measured at a 5 Mbps rate requirement.
+> Block E raised it to 15** on evidence that at 5 the radio link never bound
+> ([`BLOCK_E.md`](BLOCK_E.md), [`DECISIONS.md`](DECISIONS.md)). The throughput,
+> geometry, altitude-band and occlusion results are unaffected — none of them
+> depends on the threshold. **Three sections are superseded**: the policy floor
+> (random / waypoint mission-capable), the W1 / solo table, and the
+> relay-necessity link budget. Their re-measured values are in `BLOCK_E.md`.
+> Do not quote a mission-capable figure from this file.
+
 **Goal:** one env object that steps `num_envs` copies of the mission entirely in
 tensors on the GPU, and a measured throughput number that says whether the 45-run
 matrix in [`THESIS_PLAN.md`](THESIS_PLAN.md) §3 is affordable.
@@ -89,6 +98,15 @@ after climb-out.** Both physical effects point upward:
 | 200 m | 2.6 % | 62.7 % |
 | 230 m | **0.0 %** | — |
 
+> ⚠️ **SUPERSEDED by Block E — read this before quoting the paragraph below.**
+> The ceiling is no longer set by W1. At the 15 Mbps rate requirement a
+> best-placed solo drone is mission-capable **0.4 % at 80 m and 0.8 % at 120 m**
+> (it was 3.3 % and 57.4 % at 5 Mbps), so W1 holds at every altitude and no
+> longer discriminates between ceilings. **The band stays 40–80 m on the A2A
+> argument below, which is now the load-bearing one**, and the ceiling is
+> *chosen* rather than *derived* — see [`DECISIONS.md`](DECISIONS.md). The floor
+> is unchanged and is still a hard model-validity limit.
+
 **The ceiling is set by W1, not by A2A.** A2A occlusion alone would allow
 anything up to ~150 m. But above 80 m a best-placed *single* drone starts being
 able to do the mission unaided, which dissolves the reason the swarm exists — see
@@ -121,9 +139,13 @@ limit. Document the band as the region where the simulator is trustworthy.
 **Also add `W·v_z/η` climb power to `energy.py`** — real physics, cheap, and
 traceable. Do not expect it to bind.
 
-**The `TODO(verify)` is discharged.** The ceiling no longer needs a civil-UAS
-citation to stand up: it is derived from W1, which is the project's own scenario
-requirement, and that is a stronger justification than a regulation. Civil rules
+**The `TODO(verify)` is discharged** — but see the Block E note above: at the
+15 Mbps requirement the ceiling is no longer *derived* from W1, it is *chosen* to
+maximise the A2A occlusion RQ1 measures, within TR 36.777's validity band. That
+is a weaker form of justification than this paragraph originally claimed, and the
+write-up must say so. The original claim was: the ceiling no longer needs a
+civil-UAS citation to stand up, being derived from W1, which is the project's own
+scenario requirement and a stronger justification than a regulation. Civil rules
 (the EU open category is believed to cap at 120 m AGL) are consistent with 80 m
 and can be mentioned as corroboration, but nothing rests on them.
 
@@ -170,7 +192,9 @@ range, not in direction.**
 
 **How the policy knows it is stale**, without a clock: mostly it does not need
 to, per the above; the discriminator it actually needs — cue or neighbour
-channel — is directly observable from own and neighbours' `sees_hvt` flags; and
+channel — is directly observable from own and neighbours' `sees_hvt` flags (still
+true, and unrelated to E3a's ablation, which Block E re-pointed to `on_path` and
+the edge features); and
 for the residual, distance-to-MCV is already in the 21 dims and is strongly
 monotone in episode phase (404 → 709 → 1011 → 1333 m).
 

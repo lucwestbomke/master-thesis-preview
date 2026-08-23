@@ -262,6 +262,162 @@ Side benefit: the ceiling is now *derived* from the project's own scenario
 requirement rather than needing a civil-UAS citation, so that `TODO(verify)` is
 discharged. Regulation becomes corroboration.
 
+### Promoting N=3 to a training condition — proposed, then killed by measurement
+Raised in Block E on the reasonable-sounding grounds that N = 3 is the hardest
+condition (B0 36.4 % against 57.2 % at N = 5) and therefore the place a learned
+policy has most to prove. **Measured, it is the place a learned policy has
+*least* to prove.**
+
+What matters is not difficulty but *headroom for control*, which the
+`B0-geodesic` → `B0` gap measures directly (`eval_baseline.py --only transfer`,
+5 seeds, eval split):
+
+| N | `B0-geodesic` | `B0` | **control is worth** | fail-with-target-in-sight |
+|---|---|---|---|---|
+| 3 | 33.3 % | 36.4 % | **+3.2 pp** | 55.0 % |
+| 5 | 47.1 % | 57.2 % | **+10.1 pp** | 35.3 % |
+| 8 | 48.4 % | 74.3 % | **+25.9 pp** | 19.1 % |
+
+**Hardness and headroom move in opposite directions.** Three drones on a
+three-hop chain have essentially one viable arrangement, so cleverness buys 3
+points. Eight drones have many, and it buys 26. Look at `geodesic` along the row:
+33 → 47 → **48** — it barely improves from N=5 to N=8, because evenly spacing
+eight drones on a line is no better than evenly spacing five. `B0` does improve,
+because something is deciding where to put them. **That difference is the
+coordination problem**, and it is largest at N = 8.
+
+**Two things follow:**
+
+1. **Put the analytical weight on N = 8, not N = 3.** It is already in the matrix
+   as a zero-shot transfer column, so this costs nothing. It is also the max-N
+   padding boundary (`N_MAX = 8`), where a flat MLP should struggle and the
+   size-agnostic rungs should not — exactly RQ2's claim.
+2. **Do not train at more than one N.** It would destroy what RQ2 measures: the
+   off-N columns stop being zero-shot transfer and become in-distribution. It
+   also costs +15 runs against a budgeted 45, and `N = 5 trained; 3/5/8
+   evaluated` is a settled parameter. N = 3 stays valuable as the hard end of the
+   *evaluation* range, where the relay premise binds hardest.
+
+**A third reason not to train at N = 3, worth recording separately:** with three
+drones and a three-hop chain, every drone is load-bearing and none can be spared.
+That removes the slack any role-reconfiguration question needs, so N = 3 would
+also have damaged RQ3.
+
+### RQ3 re-pointed: relay reconfiguration, not observer handoff
+Not a rejection — a **redirection**, made on measurement, and recorded here
+because the RQ's headline changed.
+
+RQ3 asked whether the **observer** role hands off. It does, and the detector
+built in Block E works and discriminates. But the phenomenon is **rare**: a drone
+parked over the target seldom loses it, so a competent policy hands over ~once
+per 240 s episode. Per episode under B0:
+
+| | observer role | relay chain |
+|---|---|---|
+| role changes | **0.9** | **52.2** |
+| drones entering/leaving | — | 100.6 |
+| distinct role assignments | — | 16.6 |
+
+Relay reconfiguration is ~58× more frequent, and it is **driven by occlusion
+changing link quality** — RQ1's subject — where observer handoff is driven by
+sensor occlusion, the smaller half of the mission since the rate requirement
+moved to 15 Mbps.
+
+**The measurement hazard, and the metric that clears it.** `on_path` changes both
+because the routing DP re-selects over stationary drones (the algorithm) and
+because drones move into position (the policy). RQ3 must isolate the second. The
+metric that does is a drone's **link-viable run** — consecutive steps sat off the
+chain while holding a usable link to it — sampled when it is recruited. It orders
+policies correctly, which is the evidence that it measures behaviour:
+
+| | random | waypoint | `B0-geodesic` | `B0` |
+|---|---|---|---|---|
+| relay anticipation lead (steps) | 1.6 | 6.3 | 19.7 | 18.4 |
+
+Caveat to report with it: a stationary drone accumulates viable time by luck, so
+read it **across** policies, not absolutely.
+
+**Consequence for E3a:** the ablation used to zero neighbours' `sees_hvt`, which
+is the channel for *observer* handoff. The channel for relay reconfiguration is
+the `on_path` bit plus the per-edge capacity and clearance, so that is what it
+must zero now — which incidentally makes E3a the DeepSets↔GNN contrast applied to
+behaviour. Full framing in [`THESIS_PLAN.md`](THESIS_PLAN.md) RQ3.
+
+**Observer handoff is kept as a secondary result.** The detector exists, it costs
+nothing, and reporting the rare phenomenon beside the abundant one is what
+justifies having chosen between them.
+
+### ⚠️ The 5 Mbps rate requirement — raised to 15 in Block E
+Not a rejected direction: a **change**, made deliberately and recorded here
+because it moves a constant that nine documents quote and that two other
+decisions were derived from.
+
+**Why.** At 5 Mbps the radio link never binds. Block E measured the chain's
+bottleneck at a median **37.6 Mbps — 8× the bar** — so `mission_capable`
+collapsed to `observed`, the mission reduced to "put one drone over the car",
+and a scripted baseline reached **93.2 %** with the metric saturated. The relay
+chain was *necessary* (a solo drone still fails) but never *difficult*, which is
+the wrong shape for a thesis about relay geometry. Measured for B0 at N=5:
+
+| requirement | 5 | 10 | **15** | 20 | 30 | 40 Mbps |
+|---|---|---|---|---|---|---|
+| B0 mission-capable | 93.3 % | 69.6 % | **54.7 %** | 44.3 % | 19.4 % | 11.2 % |
+| sensor-only ceiling | 93.4 % | — | — | — | — | — |
+
+At 15 the binding constraint moves from the **sensor** to the **relay chain** —
+the drone can see the car and still cannot get the video home — leaving ~39
+points of headroom that are pure relay geometry. It also revives F4's
+rate-division rung, which was inert at 5 (37.6/3 = 12.5 still cleared it).
+
+**Defensible independently of the measurement**: 5 Mbps is one compressed HD
+stream; 15 is a dual EO/IR feed at low latency, which is what a tracking ISR
+sortie actually carries. The measurement chose *among* defensible values rather
+than inventing one.
+
+**What it did NOT touch:** `data/frankfurt_box.npz`, the geometry bake,
+occlusion, the throughput gate. The expensive frozen work is untouched.
+
+**What it did touch**, all re-run: `τ_l` 2 → 6 Mbps (still 40 % of the
+threshold); the three duplicate copies of the constant in `scripts/` now import
+it; `test_reward.py`'s stub capacities, which were magic numbers that silently
+crossed the bar and inverted three tests — they now express intent (`GOOD`,
+`OK`, `POOR`) relative to the constant; and every Block D/E measurement.
+
+### ⚠️ Consequence: the altitude ceiling is no longer *derived* from W1
+Block D discharged the ceiling's `TODO(verify)` by deriving 80 m from W1 — above
+it, a best-placed solo drone could do the mission and the swarm premise
+dissolved. **At 15 Mbps that argument no longer selects an altitude**, because
+W1 now holds everywhere:
+
+| ceiling | solo mission-capable at 1336 m, 5 Mbps | at **15 Mbps** |
+|---|---|---|
+| 80 m | 3.3 % | **0.4 %** |
+| 100 m | 23.2 % | **0.4 %** |
+| 120 m | **57.4 %** | **0.8 %** |
+
+This is good news about the *scenario* and awkward about the *justification*.
+The swarm premise is now robust rather than balanced on the altitude choice — at
+5 Mbps W1 broke at 120 m, and now it does not break anywhere in or above the
+band.
+
+**The band stays 40–80 m, on the reason that was always the other half of the
+argument:** A2A occlusion is what RQ1's F1 rung measures, and it is *strongest*
+at the bottom of the band — 31.2 % of air-to-air links blocked at 80 m against
+24.6 % at 120 m and 10.2 % at 180 m. Above ~180 m it disappears entirely and
+RQ1's primary result would change silently. The floor is unchanged and is still
+a hard model-validity limit (3.3 % of positions inside a building box at 40 m,
+and TR 36.777 stops at 22.5 m).
+
+**Say it accurately in the write-up.** The ceiling is now *chosen* to maximise
+the A2A blockage RQ1 studies, within TR 36.777's validity, and corroborated by
+the EU open-category 120 m AGL limit — **not** derived from W1. That is a weaker
+form of justification than Block D claimed, and pretending otherwise is the kind
+of thing an examiner checks. W1 itself is now far more robust than it was, which
+is the compensating gain.
+
+**Do not raise the ceiling on the strength of the new W1 numbers.** They permit
+it; A2A occlusion still forbids it, and that constraint is the one RQ1 rests on.
+
 ### Shorter, coarser episodes (`dt = 0.5 s`, 240 steps, 120 s)
 Proposed so that a standard `γ = 0.99, λ = 0.95` would fit the horizon. Rejected
 on three separate grounds; full tables in [`BLOCK_D.md`](BLOCK_D.md).
@@ -360,7 +516,7 @@ the layer people reach for by default.
 
 | Question | Blocked on |
 |---|---|
-| `τ_c`, `τ_l` retuning | **unblocked** — the env runs as of Block D. Safe to change, they live in the potential and cannot move the optimum. Retune against B0's behaviour in Block E or during Block G's curriculum work |
+| `τ_c`, `τ_l` retuning | **Block G**, deliberately not Block E. B0 now supplies the distributions the retune needs, but the thresholds live in the potential, so they can only affect *learning speed* — which cannot be measured until a learner exists. Retune once, in G, against the thing they act on |
 | Local height raster | whether the policy is visibly blind without it. **Block G** — the clearance margins shipped in Block D are the cheap half, and the raster is only worth building if a learned policy demonstrably cannot anticipate without it ([`ENVIRONMENT.md`](ENVIRONMENT.md) → Terrain) |
 | Second city for cross-morphology transfer | candidates London City (similar structure, different topology) or Barcelona (maximum contrast). Note LoD2 is a *Hessen* service — a second city needs its own height source, and the coverage gate must be re-run |
 | `830 m` recognition / `2.8 km` detection range | **unverified — no derivation exists in this repo.** Measured to be non-binding (99.8 % of sightlines are shorter), so results are insensitive to it; if a defensible number is ever needed, derive it from a stated camera rather than assert it. Same standing as the `TODO(verify)` constants |
@@ -368,6 +524,10 @@ the layer people reach for by default.
 | ~~Why one route lingered 333 steps on a ~240 m bridge~~ | ✅ **closed in Block D.** Measured over the whole bank (`measure_envelope.py --only route`): longest near-stationary run is **1 step**, p90 1, no route stalls >50 steps, slowest route still averages 5.77 m/s. `grow_outward` does not stall — the 333 steps were the bridge decks, and those are gone |
 | ⚠️ **F3's jammer switch must NOT be `jammer_on`** | **Block F.** The env drives `jammer_on` from the *curriculum* stage table only. F3 ("+ jammer in the SINR denominator") needs a **separate construction-time** flag. Wiring F3 into `jammer_on` confounds RQ1's jammer rung with the curriculum ramp — [`ENVIRONMENT.md`](ENVIRONMENT.md) requires the ramp to run identically in every condition, with fidelity deciding whether it *does* anything. Block D left the seam unbuilt on purpose (no config flags for unimplemented rungs) |
 | Value preprocessing for the critic | **Block G.** Pair `core.GAMMA = 0.997` with skrl's `value_preprocessor` (`RunningStandardScaler`) — returns are of order 300 and the critic has to fit that scale. Not wired in Block D because it needs the state width and belongs with the training config, not the env seam |
-| Is the 3-hop regime under-exercised? | **Block E, via B0.** [`BLOCK_B.md`](BLOCK_B.md) flagged it; Block D measured **2.6 % (random) and 4.2 % (waypoint)** of steps in a 3-hop chain. Two crude policies agreeing at ~3–4 % makes the worry look real, but the number is policy-dependent — B0 gives the one worth reporting. If it stays this low, the box or the escalation needs revisiting **before the March 2027 freeze**, since F4's multi-hop rate-division rung is what acts on it |
+| ~~Is the 3-hop regime under-exercised?~~ | ✅ **CLOSED in Block E — no.** The framing was wrong twice over. (1) Chains of **4 and 5 hops were never counted**, and `routing.py`'s divisor is `min(n, 3)`, so they are charged exactly like 3-hop ones — the regime that matters is ≥3 hops, not exactly 3. (2) The denominator included the 59 % of steps where *nobody is observing*, so no chain exists at all. Under B0 on the eval split, conditioned on a chain existing: **multi-hop 80.5 % overall and 95.6 % in the last third, with the divisor saturated at 3 on 54.2 % of late chain-steps.** Against the 4.2 % that caused the alarm that is an order of magnitude. No change to the box or the escalation — [`BLOCK_E.md`](BLOCK_E.md) §6 |
+| ⚠️ **Expect F3 → F4 to be a null: the rate-division divisor is inert** | **Block F.** Measured in Block E on B0's own trajectories at `reuse_limit ∈ {1, 3, max_hops}`: mission-capable is **93.2 % under all three**, Δ = **+0.0 pp**. Not "the reuse-3 rung is small" — the whole divisor does nothing. Cause is link margin, not hop count: B0's chain bottleneck has a **median of 37.6 Mbps, 8× the 5 Mbps bar**, and the divisor flips the outcome on **0.10 %** of chain-steps. `capacity_mbps` caps at 74 Mbps over 10 MHz, so a chain hop is nowhere near marginal. **Report the null; do not move the physics** — Ptx, bandwidth and the rate target are frozen in PHYSICS.md and derived from real radios, and the only levers (rate target, bandwidth) would invalidate Block A's tests and Chapter 3 before the freeze. [`BLOCK_E.md`](BLOCK_E.md) §6 |
+| ⚠️ **Mission success saturates at N=5 under F4 — the headline metric has ~7 pp of headroom** | **Block G and Chapter 6.** B0 reaches **93.2 %** mission-capable, and the residual is almost entirely the **launch transit**: 43 % in the first 20 s, **99.3 % after 60 s**, never-capable in 0 of 64 episodes. So "is MARL earning its keep?" cannot be answered by mission success alone at this operating point. Companion metrics that are *not* saturated: **time-to-first-capable** (B0 median 7 s), **5th-percentile capacity**, and the **N = 3** condition. RQ1 is unaffected — it compares F0–F3-trained policies *under* F4 — and carries more of the thesis than the B0 comparison does. [`BLOCK_E.md`](BLOCK_E.md) |
+| Where should RQ2's off-N weight go? | ✅ **N = 8, not N = 3** — see the entry above. The relay premise binds hardest at N = 3 (55 % of in-sight steps fail), but *control* is worth only +3.2 pp there against +25.9 pp at N = 8. Hardness is not headroom |
+| ~~Is RQ3's handoff phenomenon frequent enough to study?~~ | ✅ **RESOLVED in Block E — by changing which phenomenon RQ3 studies.** Observer handoff is ~0.9/episode and too thin; relay-chain reconfiguration is ~52/episode and is driven by the occlusion physics RQ1 is about. RQ3 re-pointed; E3a's ablation changed with it. See the entry above and [`THESIS_PLAN.md`](THESIS_PLAN.md) |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |
 | ~~The altitude ceiling's citation~~ | ✅ **discharged in Block D.** The ceiling is 80 m and *derived* from W1 — above it a best-placed single drone can do the mission alone, which dissolves the swarm premise. No regulatory citation is load-bearing any more; civil UAS limits are corroboration. See [`BLOCK_D.md`](BLOCK_D.md) |

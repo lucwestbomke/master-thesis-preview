@@ -144,51 +144,93 @@ plausible. The interesting result is in the transfer columns. RQ2 is the most
 conventional part of the thesis and the first place to shrink (to DeepSets vs
 GNN) if scope tightens — RQ1 is the contribution.
 
-### RQ3 (tertiary) — Does the observer role hand off, and is the handoff coordinated?
+### RQ3 (tertiary) — Do relay roles reconfigure as the channel changes, and is the reconfiguration anticipatory?
 
-> The HVT turns a corner and the incumbent observer loses its sightline. Does a
-> successor take over, does it **pre-position** before the loss rather than
-> scrambling after it, and does that require coordination?
+> Buildings move in and out of the way as the target drives. Links that carried
+> the feed stop carrying it. Does the swarm **hand the relay job over** before the
+> incumbent link fails rather than after, and does that require coordination?
 
-**Why this framing rather than energy-driven rotation.** The original RQ3 asked
-whether `-λ·Var(B)` causes drones to take turns at the expensive job. Measuring
-the energy model killed it: a realistic airframe depletes only **8–17 % of its
-battery in a 240 s episode**, so batteries never bind, `Var(B)` stays tiny, and λ
-has nothing to act on. That risks the worst kind of null — *"there was nothing to
-explain"* rather than *"λ does not explain it"* — which is uninterpretable.
+**⚠️ Re-pointed in Block E, on measurement.** This RQ used to ask about the
+**observer** role handing off. Measured against the built environment, that
+phenomenon is rare — a drone parked over the target seldom loses it, so a
+competent policy hands the observer role over **about once per 240 s episode**.
+Asking a research question about a once-per-episode event invites a thin result.
 
-Geometric handoff cannot fail that way: the target drives behind buildings, so
-sightlines **must** change hands or the mission fails. The phenomenon is forced by
-the environment rather than contingent on a reward parameter. It also costs
-nothing new to study, and it ties directly to the occlusion physics that is RQ1's
-subject.
+The **relay** chain is a different story, and it is the one the environment
+actually forces. Per episode under B0 ([`BLOCK_E.md`](BLOCK_E.md), regenerate with
+`eval_baseline.py --only rq3`):
 
-Note a handoff is not merely "a different drone looks at the target" — the new
-observer becomes the *source* of the feed, so the whole relay chain re-roots. It
-is a swarm-level reconfiguration.
+| | observer role | relay chain |
+|---|---|---|
+| role changes per episode | **0.9** | **52.2** |
+| drones entering/leaving | — | 100.6 |
+| distinct role assignments visited | — | 16.6 |
+| anticipation lead (steps) | 8.1 | **18.4** |
+
+Two reasons this is the better target, and neither is "it is a bigger number":
+
+1. **It is driven by the effect the thesis studies.** Relay reconfiguration is
+   caused by *occlusion changing link quality* — RQ1's subject. Observer handoff
+   is caused by sensor occlusion, which after the rate requirement moved to
+   15 Mbps is the smaller half of the mission ([`DECISIONS.md`](DECISIONS.md)).
+2. **It cannot fail the way energy-driven rotation failed.** The original RQ3 was
+   killed because a realistic airframe depletes only 8–17 % of its battery in
+   240 s, so `Var(B)` had nothing to act on and a null would have been
+   uninterpretable — *"there was nothing to explain"* rather than *"λ does not
+   explain it"*. Relay reconfiguration is forced by geometry: the target drives
+   outward, the chain must lengthen and re-form or the mission fails.
+
+**The measurement problem this creates, stated up front.** `on_path` changes for
+two reasons, and only one of them is behaviour: the routing DP re-selects over
+*stationary* drones (that is the algorithm), or drones *move* into position (that
+is the policy). **RQ3 must isolate the second.** The metric that does it is the
+one already implemented: a drone's **link-viable run** — how many consecutive
+steps it sat off the chain while holding a usable link to it — sampled at the
+moment it is recruited. Zero means it was picked the instant it became usable;
+large means it was standing by. It orders policies the way it should:
+
+| | random | waypoint | `B0-geodesic` | `B0` |
+|---|---|---|---|---|
+| relay anticipation lead (steps) | 1.6 | 6.3 | 19.7 | 18.4 |
+
+Caveat to report with it: a *stationary* drone can accumulate viable time by luck,
+so the quantity is meaningful **across** policies rather than in absolute terms.
 
 **Two sub-questions, two ablations:**
 
 | | Ablation | Tests |
 |---|---|---|
-| a | zero the neighbours' `sees_hvt` flag in the observation | is the handoff **coordinated**, or five drones independently doing the locally-best thing? |
-| b | `λ = 0` vs `λ = λ*` | does energy pressure add a *second* rotation driver on top of geometry? |
+| a | zero the neighbours' `on_path` bit **and the edge features** in the observation | is the reconfiguration **coordinated**, or five drones independently doing the locally-best thing? |
+| b | `λ = 0` vs `λ = λ*` | does energy pressure add a *second* driver on top of geometry? |
+
+> **(a) changed with the re-pointing.** It used to zero neighbours' `sees_hvt`,
+> which is the channel for *observer* handoff. The channel for relay
+> reconfiguration is the `on_path` bit plus the per-edge capacity and clearance —
+> so that is what must be removed. Note this makes (a) the **exact** DeepSets↔GNN
+> contrast from RQ2 applied to behaviour rather than to reward, since the edge
+> features are what separates those two rungs ([`MODELS.md`](MODELS.md)).
 
 (b) is only informative because initial battery is randomised in `[0.3, 1.0]` —
 a swarm mid-sortie has heterogeneous charge — which gives `Var(B)` something to
 act on from step 1 instead of waiting for depletion that never arrives.
 
-**Metrics** — these are the point, and they are richer than counting role swaps:
-- **Handoff continuity**: was there a gap where nobody observed the HVT?
-- **Anticipation lead time**: in the steps *before* the incumbent lost line of
-  sight, had the successor already begun moving into position? This separates a
-  reactive swarm from an anticipatory one, and it is the headline claim.
-- Handoff rate, and chain re-rooting latency after each handoff.
+**Metrics** — richer than counting role swaps:
+- **Anticipation lead**, as above. **This is the headline claim.**
+- **Re-rooting rate** and **churn** (drones entering/leaving the chain), and the
+  number of distinct role assignments visited — how much reconfiguration happens
+  at all.
+- **Continuity**: was there a gap where the feed was not being delivered across a
+  reconfiguration?
+- **Observer handoff rate, gap and lead** — kept as a *secondary* result. The
+  detector works and discriminates (lead 1.3 random → 8.1 B0), so it costs
+  nothing, and reporting the rare phenomenon alongside the abundant one is what
+  justifies having chosen between them.
 
-**Honest trade:** `λ=0` vs `λ=λ*` is the cleaner experiment — one scalar, airtight
-causality. Removing an observation feature is slightly more arguable, since the
-policy might compensate through another channel. That rigour is traded for a
-phenomenon guaranteed to exist. **First thing to cut if time runs short.**
+**Honest trade:** `λ=0` vs `λ=λ*` is still the cleaner experiment — one scalar,
+airtight causality. Removing observation features is more arguable, since the
+policy may compensate through another channel. That rigour is traded for a
+phenomenon guaranteed to exist. **Still the first thing to cut if time runs
+short** — RQ1 is the contribution.
 
 ---
 
@@ -199,7 +241,7 @@ phenomenon guaranteed to exist. **First thing to cut if time runs short.**
 | B0 | **Scripted geometric heuristic** — relays placed on the MCV→HVT geodesic, one observer, fixed Ptx | Non-learned control. Answers "is MARL earning its keep?" Cheap, disproportionately valuable. |
 | E1 | Learned policy trained at each of F0–F4, all evaluated under F4 | RQ1 |
 | E2 | F4-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
-| E3a | F4-trained, neighbours' `sees_hvt` zeroed | RQ3 — is handoff coordinated? |
+| E3a | F4-trained, neighbours' `on_path` bit **and edge features** zeroed | RQ3 — is relay reconfiguration coordinated? (was `sees_hvt`; re-pointed in Block E) |
 | E3b | F4-trained with `λ = 0` vs `λ = λ*` | RQ3 — does energy add a second driver? |
 | E4 | F4-trained with a 4-dim action (motion **+** transmit power) | RQ-power null, see below |
 
@@ -267,10 +309,13 @@ fraction; mean and 5th-percentile end-to-end capacity.
 - mean chain hop count and mean hop distance
 - fraction of failures caused by observation loss vs link loss vs battery
 
-**Behavioural (RQ3):** handoff continuity (coverage gap when the observer
-changes); **anticipation lead time** (did the successor pre-position before the
-incumbent lost line of sight?); handoff rate; chain re-rooting latency; terminal
-battery variance.
+**Behavioural (RQ3):** **relay anticipation lead** (how long a drone held a
+usable link to the chain before being recruited — 0 = reactive, large = standing
+by) · re-rooting rate, churn, and distinct role assignments visited · continuity
+across a reconfiguration · terminal battery variance. **Secondary:** observer
+handoff rate, coverage gap and lead. Re-pointed from observer handoff to relay
+reconfiguration in Block E — the first happens ~0.9 times an episode, the second
+~52 ([`BLOCK_E.md`](BLOCK_E.md)).
 
 ---
 

@@ -28,8 +28,8 @@ line of sight, so the relay chain is geometrically necessary.
 | **B** | Frankfurt LoD2/OSM pipeline → buildings + road graph as tensors | ✅ **done**, `data/frankfurt_box.npz`, 27 tests |
 | **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
-| E | Renderer + B0 scripted heuristic baseline | ⬅️ **next** |
-| F | Fidelity levels F0–F4 as config flags | not started |
+| **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
+| F | Fidelity levels F0–F4 as config flags | ⬅️ **next** |
 | G | MAPPO integration + curriculum | not started |
 | H | Sionna offline validation of the closed-form channel | not started |
 
@@ -40,8 +40,41 @@ material. Full timeline in [`docs/THESIS_PLAN.md`](docs/THESIS_PLAN.md).
 Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) records what was measured
 and decided, and is the reference for the artefact's contents. Block C is
 specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
-[`docs/BLOCK_D.md`](docs/BLOCK_D.md). Why each block exists, what it gates and
+[`docs/BLOCK_D.md`](docs/BLOCK_D.md), Block E in
+[`docs/BLOCK_E.md`](docs/BLOCK_E.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+⚠️ **Block E changed a settled parameter and several downstream expectations.**
+Read [`docs/BLOCK_E.md`](docs/BLOCK_E.md) before planning an experiment:
+
+1. **The rate requirement is 15 Mbps, not 5.** At 5 the radio link never bound —
+   the chain carried 8× the bar, `mission_capable` collapsed to `observed`, and a
+   *scripted* baseline reached 93 % with the metric saturated. At 15 the binding
+   constraint moves from the sensor to the relay chain, which is the swarm
+   problem this project studies. **Block D's numbers are all at 5 Mbps and are
+   not comparable.** Ledger of what was re-derived:
+   [`docs/DECISIONS.md`](docs/DECISIONS.md).
+2. **The altitude ceiling is no longer *derived* from W1.** At 15 Mbps a
+   best-placed solo drone fails at every altitude (0.4 % at 80 m, 0.8 % at
+   120 m), so W1 holds everywhere and no longer selects a ceiling. The band stays
+   40–80 m on the **A2A-occlusion** ground — 31.2 % of A2A links blocked at 80 m
+   against 24.6 % at 120 m — which is the effect RQ1 measures. Do not raise the
+   ceiling on the strength of the new W1 numbers.
+3. **F3 → F4 is a large effect** (Δ = +26.5 pp), reversing the null predicted at
+   5 Mbps. The divisor flips 26.6 % of B0's chain-steps.
+4. **The escalation worry is closed.** Conditioned on a chain existing, B0 is
+   multi-hop on 95.1 % of last-third steps with the divisor saturated on 50.0 %.
+   The old "4.2 % 3-hop" figure was diluted by chainless steps and excluded 4-
+   and 5-hop chains.
+5. **RQ2's off-N weight belongs at N = 8, not N = 3.** Control is worth +25.9 pp
+   at N = 8 against +3.2 pp at N = 3 — the hardest condition is the least
+   informative one, because three drones on a three-hop chain have one viable
+   arrangement. **Do not train at more than one N**: it confounds the zero-shot
+   transfer test RQ2 exists to run.
+6. **RQ3 is re-pointed** from observer handoff (~0.9 per episode) to **relay-chain
+   reconfiguration** (~52 per episode), which is driven by occlusion changing
+   link quality rather than sensor occlusion. E3a's ablation now zeroes the
+   `on_path` bit and edge features, not `sees_hvt`.
 
 ✅ **The throughput gate is met.** RTX 5090, 2026-08-12: compiled occlusion runs
 **3.17 M env-steps/s** at `num_envs = 1024` — ~3170× the gate — and occlusion is
@@ -108,6 +141,15 @@ Frankfurt box ([`docs/DECISIONS.md`](docs/DECISIONS.md)). Buildings are 2.5D:
 check the segment's altitude across the 2D intersection interval, not just a
 planar crossing.
 
+**B0 sees only `obs["flat"]`.** The scripted baseline is a pure function of the
+same `(B, N, 108)` tensor the actors consume, plus its own carried state — it
+never reads `env.hvt_pos` or any other env attribute. That is what makes "does
+MARL earn its keep?" a question about *control* rather than about information,
+and it is asserted by a test that runs a decoy scenario underneath a replay
+(`src/baselines/test_b0.py`). The `oracle` variant is the deliberate exception
+and takes ground truth through an explicit argument. Do not relax this to make a
+number look better; the measured cost of the restriction is **0.6 pp**.
+
 **Formulas are traceable.** Do not change path-loss / SINR / capacity / energy
 formulas without updating the hand-computed tests and checking the cited
 standard. They appear in the methodology chapter.
@@ -144,6 +186,17 @@ mean ± std — RL returns are not normally distributed. Never report single run
   the wrong band for the tactical MANET radios Ptx is derived from, and would
   invalidate Block A, PHYSICS.md and Chapter 3 before the freeze. It belongs in
   future work, where it strengthens the discussion for free.
+- ⛔ **Lower the rate requirement back toward 5 Mbps.** It was 5, and at 5 the
+  link never binds: the chain carries 8× the bar, `mission_capable` becomes
+  identical to `observed` for every policy, the N-scaling flattens to ~92 % at
+  N = 3/5/8, and F4's rate-division rung does nothing. Raising it to 15 is what
+  made the relay chain the binding constraint. [`docs/DECISIONS.md`](docs/DECISIONS.md).
+- ⛔ **Raise the altitude ceiling because W1 now permits it.** At 15 Mbps W1
+  holds at every altitude, so it no longer pins the ceiling — but A2A occlusion
+  still does, and that is the constraint RQ1's F1 rung rests on.
+- ⛔ **Promote the `measure_envelope.py` waypoint policy to B0.** It reads
+  `env.hvt_pos` off the env, so it is oracle-fed, and it is untuned. It exists
+  only so Block D's numbers had a regenerable ceiling. B0 is `src/baselines/b0.py`.
 - ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
 - ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
   and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
@@ -160,12 +213,12 @@ mean ± std — RL returns are not normally distributed. Never report single run
 | Ptx | **30 dBm fixed** | UAV tactical MANET radios are 0.5–2 W |
 | Jammer | 30 dBm in-band, rides the HVT | vehicle C-UAS barrage emitter |
 | Carrier / bandwidth | 3.5 GHz / **10 MHz** | so the 5 Mbps target actually binds |
-| Rate target | **5 Mbps** end-to-end | compressed HD EO/IR feed |
+| Rate target | **15 Mbps** end-to-end | dual EO/IR feed at low latency. Raised from 5 in Block E: at 5 the link never bound, `mission_capable` collapsed to `observed`, and a script scored 93 %. Defined once in `reward.py` — [`docs/DECISIONS.md`](docs/DECISIONS.md) |
 | Flight altitude | band **40–80 m**, ceiling = nominal | Both ends are *derived*, not chosen. **Floor**: model validity — below 40 m, 8–37 % of positions sit inside a building box (where occlusion's endpoint convention lets a drone see through its own building) and TR 36.777 stops at 22.5 m. **Ceiling**: scenario validity — above it a best-placed *single* drone can do the mission (3.3 % at 80 m vs 57.4 % at 120 m), which dissolves W1 and with it the reason for a swarm. [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | Drone speed | 20 m/s cruise, 25 m/s dash | 1.4–1.8× margin over the HVT |
 | HVT | 300–500 m from MCV, drives away | chain escalates 1 → 2 → 3 hops |
 | Episode | **600 steps × 0.4 s** = 240 s | covers the escalation to 3 hops. **Do not shorten**: at 120 s the HVT reaches only ~1000 m and *no* route enters the 3-hop regime (0.0 % vs 36.8 %). A route step is a fixed *displacement*, so changing `dt` also changes HVT speed and needs a re-bake of the frozen artefact |
-| Swarm | `N = 5` trained; 3/5/8 evaluated | |
+| Swarm | `N = 5` trained; 3/5/8 evaluated | **Trained at one N only** — training off-N would turn RQ2's zero-shot transfer columns into in-distribution tests. Control headroom is largest at N = 8 (+25.9 pp) and smallest at N = 3 (+3.2 pp) |
 | Discount | **γ ≈ 0.997–0.999** | default 0.99 is blind to the hard end of the episode |
 
 Regenerate the sizing with [`scripts/scenario_design.py`](scripts/scenario_design.py)
@@ -196,9 +249,10 @@ detectability modelling.
 
 ## Layout & conventions
 ```
-src/env/       channel, routing, energy, reward  (built)
-               occlusion, batched core           (to build)
-src/models/    GNN / DeepSets / MLP actor-critic
+src/env/       channel, routing, energy, reward, occlusion, batched core
+src/baselines/ B0 scripted control + the rollout/metrics harness
+src/viz/       shared scene drawing + presentation figures and videos
+src/models/    GNN / DeepSets / MLP actor-critic     (to build)
 src/training/  skrl wrappers, entrypoints
 scripts/       offline data prep + scenario tooling
 configs/       YAML per experiment condition
@@ -224,7 +278,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 207 tests (+4 CUDA-only skips)
+uv run pytest                                    # 235 tests (+4 CUDA-only skips)
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for
@@ -246,4 +300,12 @@ seconds:
 uv run python scripts/view_episode.py --worst --polygons   # boxes vs source footprints
 uv run python scripts/view_episode.py --route 0 --zoom --save ep.mp4
 uv run python scripts/bench_occlusion.py                   # re-run this on CUDA
+```
+Block E. `eval_baseline.py` regenerates every number in `docs/BLOCK_E.md`;
+`render_episode.py` is the *presentation* renderer (thesis figures, wandb videos)
+as against `view_episode.py`, which is the inspection tool:
+```bash
+uv run python scripts/eval_baseline.py                     # all sections, 5 seeds
+uv run python scripts/eval_baseline.py --only ladder hops
+uv run python scripts/render_episode.py --compare --route 12 --video
 ```

@@ -25,9 +25,13 @@ all, which would rig the transfer comparison toward the GNN.
 observation contract: structured keys `ego (B,N,24)`, `neighbour (B,N,N-1,9)`,
 `edge (B,N,N-1,2)` for PyG batching and debugging, plus a **`flat (B,N,108)`**
 packing at `N_max = 8` — 24 ego + 7×9 neighbour + 7×2 edge + 7 validity bits —
-because skrl's rollout storage wants one fixed-shape tensor per agent. All three
-architectures consume `flat` and unpack it, so the padding is identical across
-rungs by construction rather than by discipline.
+because skrl's rollout storage wants one fixed-shape tensor per agent.
+
+**And the unpacking is shared, so the padding is identical by construction rather
+than by discipline.** Block E added `core.unpack_flat()` — the inverse of the
+env's own `_pack`, living next to it — which B0 and all three architectures
+consume. A second, hand-rolled unpacking somewhere else is exactly how that
+guarantee gets lost.
 
 Ego is 24, not 21: a persistent 3-dim vector to the cue was added, and no time
 feature was ([`ENVIRONMENT.md`](ENVIRONMENT.md) → Observations).
@@ -69,8 +73,44 @@ fixed the static-attention flaw in the original GAT, so it is the right citation
    likely way this result gets dismissed.
 3. **Match parameter counts** to within ~20 %, so the comparison is not
    capacity-vs-capacity.
-4. **Sanity floor:** any architecture must beat a random policy and at least
-   match the B0 scripted heuristic. Failing that is a bug, not a finding.
+4. **Sanity floor, now with numbers.** Any architecture must beat a random policy
+   and at least match B0. Failing that is a bug, not a finding. Measured in
+   [`BLOCK_E.md`](BLOCK_E.md), eval split, 5 seeds × 64 episodes, median [IQR],
+   at the **15 Mbps** requirement:
+
+   | | mission-capable |
+   |---|---|
+   | random | 10.9 % [1.1] |
+   | `B0-geodesic` | 47.1 % [3.1] |
+   | **B0 — the floor to match** | **57.2 % [3.5]** |
+   | `B0-oracle` (upper bound) | 56.8 % [3.2] |
+   | *sensor-only ceiling* (`observed`) | *93.0 %* |
+
+   **~36 points of headroom, and all of it is relay geometry** — the swarm can
+   see the target 93 % of the time and deliver the feed 57 % of the time. That is
+   the gap a learned policy has to close, and it is exactly the coordination
+   problem RQ2 asks whether relational structure helps with.
+
+   Two things to plan around:
+
+   - **The N-transfer columns now measure the chain**, and **N = 8 is where RQ2's
+     claim is testable.** B0 scores 36.4 / 57.2 / 74.3 % at N = 3/5/8 while
+     `observed` stays flat at ~93 %, so off-N transfer is a *relay-scaling* test —
+     which is what RQ2 wanted it to be. But the informative column is N = 8, not
+     N = 3: the `B0-geodesic` → `B0` gap, i.e. what better control is *worth*, runs
+     **+3.2 / +10.1 / +25.9 pp**. Three drones on a three-hop chain have one viable
+     arrangement and cleverness buys almost nothing; eight have many. It is also
+     the `N_MAX = 8` padding boundary, where a flat MLP is at its limit and the
+     size-agnostic rungs should not be — exactly the contrast RQ2 tests.
+
+     **Do not train at more than one N to exploit this.** It would turn the
+     zero-shot transfer columns into in-distribution tests and delete the
+     experiment ([`DECISIONS.md`](DECISIONS.md)).
+   - **Difficulty is concentrated late in the episode** (capable decays 84 % →
+     35 % as the HVT drives out). An architecture that only fixes the opening
+     will not show up. Report the second half separately.
+
+   Regenerate with `uv run python scripts/eval_baseline.py --only ladder transfer`.
 
 ## Depth follows graph diameter — and "layer" means two different things
 Do not confuse these:
@@ -104,6 +144,12 @@ starting point, not a finding.
 At `N=5` the graph is tiny and GNN ≈ DeepSets is a plausible outcome. The
 interesting result lives in the **off-N and cross-city transfer** columns. A
 clean null, reported as such, is still a contribution.
+
+Block E leaves this expectation where it was, rather than strengthening it. At
+the 15 Mbps requirement a scripted controller reaches 57.2 % against a 93.0 %
+sensor ceiling, so the headline metric has real room and the three rungs can
+separate on it. (At the original 5 Mbps bar B0 scored 93.2 % and the metric was
+saturated — that is what the requirement change fixed.)
 
 ---
 

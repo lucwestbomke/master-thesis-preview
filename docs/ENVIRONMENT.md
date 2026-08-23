@@ -16,15 +16,31 @@ outward. This resolves a conflict that otherwise has no solution: the MCV must b
 ~1000 m), but *near* for the cue to still be useful on arrival. Starting close and
 opening the range gives both, and the chain requirement escalates on its own:
 
-| Time | Range | Solo drone | Chain |
-|---|---|---|---|
-| t=0 | 400 m | 18.5 Mbps | 1 hop |
-| t=60 s | 700 m | 9.5 Mbps | 1 hop |
-| t=120 s | 1000 m | 4.7 Mbps | **2 hops** |
-| t=240 s | 1400 m | 2.1 Mbps | **3 hops** |
+| Time | Range | Solo drone | Chain @ 5 Mbps | Chain @ **15 Mbps** |
+|---|---|---|---|---|
+| t=0 | 400 m | 18.5 Mbps | 1 hop | 1 hop |
+| t=60 s | 700 m | 9.5 Mbps | 1 hop | **2 hops** |
+| t=120 s | 1000 m | 4.7 Mbps | **2 hops** | **2–3 hops** |
+| t=240 s | 1400 m | 2.1 Mbps | **3 hops** | **3+ hops** |
+
+> **The rate requirement is 15 Mbps** (raised from 5 in Block E —
+> [`DECISIONS.md`](DECISIONS.md)), so the escalation starts *earlier* than the
+> middle column: a solo drone drops below the bar before t=60 s rather than
+> around t=120 s. Measured under B0 on real geometry, the chain is multi-hop on
+> **80 %** of steps overall and **95 %** of last-third steps, with the
+> `min(n,3)` divisor saturated on **50 %** of late chain-steps
+> ([`BLOCK_E.md`](BLOCK_E.md)). The escalation this table describes is real and
+> is exercised.
 
 The episode is therefore its own curriculum — easy at the start, hard at the end —
 so early training gets dense reward from the opening instead of hitting a wall.
+
+✅ **Measured, and it now behaves as designed.** B0's mission-capable fraction
+peaks at **84 % around t = 40 s and decays to 35 % by t = 240 s**, while
+`observed` holds at 98 % throughout: the sensor problem is solved early and the
+*chain* is what degrades as the target drives out. At the original 5 Mbps bar
+this profile was flat at ~100 % after 60 s and the intended difficulty gradient
+did not exist ([`BLOCK_E.md`](BLOCK_E.md)).
 
 **Cue — its job is to break directional symmetry, not to solve acquisition.**
 One-shot at launch, `σ ≈ 150 m`, **never refreshed**.
