@@ -28,13 +28,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
-from matplotlib.collections import PatchCollection
-from matplotlib.patches import Polygon as MplPoly
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling scripts
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src package
 
 from src.env.occlusion import segment_clearance
+
+# Shared with scripts/render_episode.py. Extracted rather than duplicated: the
+# reason this drawing code is trusted is that it draws the ORIENTED BOXES the
+# env consumes, and two copies of that would drift apart (docs/BLOCK_E.md §8).
+from src.viz.scene import (
+    draw_static_scene,
+    inside_any_box,
+)
 
 ARTEFACT = Path(__file__).resolve().parent.parent / "data" / "frankfurt_box.npz"
 OUTDIR = Path(__file__).resolve().parent.parent / ".cache" / "view"
@@ -43,9 +49,6 @@ HALF = 750.0
 DT_S = 0.4
 HVT_Z = 1.5  # a vehicle
 MCV_Z = 2.0
-
-TOWER_M = 100.0
-MIDRISE_M = 40.0
 
 
 def _use_bundled_ffmpeg() -> bool:
@@ -68,54 +71,6 @@ def _use_bundled_ffmpeg() -> bool:
         return True
     except Exception:  # noqa: BLE001 - fall back to GIF
         return False
-
-
-def box_corners(b: np.ndarray) -> np.ndarray:
-    """(M,6) oriented boxes -> (M,4,2) corner polygons."""
-    cx, cy, hw, hh, ca, sa = b.T
-    local = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=float)
-    out = np.empty((len(b), 4, 2))
-    for i, (dx, dy) in enumerate(local):
-        x, y = dx * hw, dy * hh
-        out[:, i, 0] = cx + x * ca - y * sa
-        out[:, i, 1] = cy + x * sa + y * ca
-    return out
-
-
-def inside_any_box(pts: np.ndarray, boxes: np.ndarray, chunk: int = 600) -> np.ndarray:
-    cx, cy, hw, hh, ca, sa = boxes.astype(np.float64).T
-    out = np.zeros(len(pts), dtype=bool)
-    for i in range(0, len(boxes), chunk):
-        s = slice(i, i + chunk)
-        dx = pts[:, None, 0] - cx[s]
-        dy = pts[:, None, 1] - cy[s]
-        lx = dx * ca[s] + dy * sa[s]
-        ly = -dx * sa[s] + dy * ca[s]
-        out |= ((np.abs(lx) <= hw[s]) & (np.abs(ly) <= hh[s])).any(axis=1)
-    return out
-
-
-def source_footprints():
-    """Original LoD2 polygons in local metres, for visual comparison only.
-
-    Reads the offline cache, so this is the one place in the viewer that needs
-    `geopandas`. The env never sees polygons -- it only ever sees the boxes.
-    """
-    import geopandas as gpd
-    from prep_osm import BOX_SIZE_M, UTM32N, local_origin_utm
-
-    cache = Path(__file__).resolve().parent.parent / ".cache" / "prep_osm" / "lod2.gpkg"
-    if not cache.exists():
-        print(f"[warn] {cache} missing; run scripts/prep_osm.py --refresh")
-        return
-    ox_, oy_ = local_origin_utm()
-    half = BOX_SIZE_M / 2.0
-    g = gpd.read_file(cache).to_crs(UTM32N)
-    g = g.cx[ox_ - half : ox_ + half, oy_ - half : oy_ + half]
-    for geom in g.geometry:
-        for part in geom.geoms if geom.geom_type == "MultiPolygon" else [geom]:
-            xs, ys = part.exterior.coords.xy
-            yield np.asarray(xs) - ox_, np.asarray(ys) - oy_
 
 
 def clearance_series(mcv: np.ndarray, traj: np.ndarray, boxes, heights) -> np.ndarray:
@@ -228,27 +183,11 @@ def main() -> None:
     # ---- figure ----------------------------------------------------------
     fig, (ax, axc) = plt.subplots(2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [4, 1]})
 
-    corners = box_corners(boxes)
-    colours = np.where(
-        heights >= TOWER_M, "#c0392b", np.where(heights >= MIDRISE_M, "#8a8a8a", "#d8d8d8")
+    draw_static_scene(
+        ax,
+        {"boxes": boxes, "heights": heights, "nodes": nodes, "edges": edges},
+        polygons=args.polygons,
     )
-    ax.add_collection(
-        PatchCollection(
-            [MplPoly(c, closed=True) for c in corners],
-            facecolors=colours,
-            edgecolors="#00000018",
-            linewidths=0.3,
-        )
-    )
-    if args.polygons:
-        for xs, ys in source_footprints():
-            ax.plot(xs, ys, color="#16a085", lw=0.8, alpha=0.9, zorder=2.5)
-        ax.plot([], [], color="#16a085", lw=0.8, label="source LoD2 footprint")
-
-    for a, b in edges:
-        ax.plot(
-            *zip(nodes[a], nodes[b], strict=True), color="#3498db", lw=0.5, alpha=0.55, zorder=2
-        )
 
     ax.plot(traj[:, 0], traj[:, 1], color="#f39c12", lw=1.2, alpha=0.5, zorder=3)
     ax.plot(*mcv, "k*", ms=20, zorder=6, label="MCV")
