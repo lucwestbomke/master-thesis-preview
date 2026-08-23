@@ -115,7 +115,20 @@ FLAT_DIM = EGO_DIM + (N_MAX - 1) * (NEIGHBOUR_DIM + EDGE_DIM + 1)  # 24 + 77 = 1
 POS_SCALE_M = BOX_HALF_M
 VEL_SCALE_MS = DRONE_DASH_MS
 CLEARANCE_CLAMP_M = 150.0  # occlusion returns 1e4 for "nothing in the way"
-CAPACITY_CLAMP = 4.0  # in threshold units, so 4 == 20 Mbps
+# Capacity features are stored in THRESHOLD units and clamped here, so this sets
+# how much of the physical range the network can actually see. 5.0 x 15 Mbps =
+# 75 Mbps, just above `capacity_mbps`'s own ceiling of 7.4 b/s/Hz x 10 MHz =
+# 74 Mbps -- so the observation now saturates only where the PHYSICS saturates,
+# never before it.
+#
+# It used to be 4.0, which at the old 5 Mbps threshold clamped at 20 Mbps while
+# real drone-drone links run to 74. Measured under B0: **57.5 % of link-capacity
+# values sat pinned at the clamp**, against 6.3 % genuinely at zero -- so barely
+# a third of the feature carried any information. That matters more than it
+# sounds: `edge` is the ONLY input the GNN rung has and the DeepSets rung does
+# not (docs/MODELS.md), so a pinned capacity feature quietly handicaps the one
+# comparison RQ2 exists to make. At 5.0 the informative share is 93.7 %.
+CAPACITY_CLAMP = 5.0
 NOISE_REF_DBM = -97.0  # thermal floor at 10 MHz / 7 dB NF
 NOISE_SCALE_DB = 30.0
 LINK_TIMEOUT_SCALE = 50.0

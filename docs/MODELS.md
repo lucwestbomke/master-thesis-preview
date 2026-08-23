@@ -41,6 +41,21 @@ RQ2's GNN rung exists **only** to test whether link quality should modulate who 
 drone listens to. If the layer cannot ingest edge features, the GNN rung silently
 becomes the DeepSets rung and RQ2 measures nothing.
 
+> ⚠️ **The same failure can happen without touching the layer, and nearly did.**
+> The edge capacity feature is normalised to threshold units and clamped at
+> `CAPACITY_CLAMP`. That was 4.0 against a 5 Mbps threshold, i.e. a 20 Mbps
+> ceiling — while real drone-drone links run to 74 Mbps. Measured under B0,
+> **57.5 % of capacity values sat pinned at the clamp** and only ~36 % varied at
+> all. A GNN cannot weight messages by a constant, so the rung would have been
+> handicapped by a *normalisation constant* rather than by the architecture, and
+> the resulting null would have looked like a finding about relational structure.
+> `CAPACITY_CLAMP` is now 5.0 against a 15 Mbps threshold — a 75 Mbps ceiling,
+> just above the 7.4 b/s/Hz × 10 MHz physical cap — so the observation saturates
+> only where the physics does. Informative share: **93.7 %**.
+>
+> **Check this before trusting any RQ2 null.** If the feature does not vary,
+> nothing downstream of it can.
+
 | PyG layer | Edge features | Verdict |
 |---|---|---|
 | `SAGEConv` (GraphSAGE) | **none** | ☠️ **Never use here.** Collapses GNN into DeepSets. This is the default people reach for. |

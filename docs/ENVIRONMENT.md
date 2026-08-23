@@ -280,13 +280,55 @@ GNN has and DeepSets does not** — it is precisely the rung RQ2 tests.
 
 ### How many neighbours — all of them, softly gated
 `N−1 ≤ 7`. The graph is **fully connected in the tensor**, with influence scaled
-by `E_ij = sigmoid((C_ij − 5.0)·γ)`. A neighbour behind a tower gets weight ≈0 and
-its message is suppressed.
+by `E_ij = sigmoid((C_ij − CAPACITY_THRESHOLD_MBPS)·γ)`. A neighbour behind a
+tower gets weight ≈0 and its message is suppressed.
 
 Not top-K, not a hard link-quality cutoff: a hard cutoff creates a gradient cliff
 when a neighbour flickers across the threshold, and changes tensor shape per
 timestep, which wrecks batching. Soft weights give the same effect with a smooth
 gradient and a fixed shape.
+
+#### Why a drone hears from neighbours it cannot carry video to
+
+The obvious objection: if drone *i* has no viable link to *j*, how does *j*'s
+position report reach it? Two answers, and the first is the load-bearing one.
+
+**Telemetry and video are three orders of magnitude apart in rate.** The mission
+requirement is **15 Mbps** for the sensor feed; a position/velocity/battery/flag
+report is tens of bytes at a few Hz — call it 10 kbps. Over 10 MHz that is
+0.001 b/s/Hz against 1.5, and inverting `min(0.75·log₂(1+SINR), 7.4)` puts the
+telemetry threshold near **−30 dB SINR** against **+4.8 dB** for a single video
+hop. **A link can fail for video by 35 dB and still carry telemetry.** Real
+tactical MANETs are built exactly this way — a low-rate always-on situational-
+awareness channel underneath the high-rate payload.
+
+**And the swarm is a mesh, not a set of point-to-point links.** Even a genuinely
+dead direct path does not isolate *j*: its report reaches *i* via any relay. That
+is what a MANET is for, and it is the same multi-hop the video uses.
+
+So gating the neighbour channel on the *video* link would be **over-strict, not
+conservative** — it would model a radio nobody builds. What the observation does
+instead is give every drone the link state and let it draw its own conclusion:
+`edge` carries `C_ij` and the clearance margin for *every* pair, so "my link to
+*j* is dead" is **present information**, not missing information. That is exactly
+what a drone needs to reason about chain geometry, and withholding it would make
+the task harder in an unphysical way.
+
+> ⚠️ **Two assumptions this rests on, both optimistic, neither currently
+> modelled.** (1) Position reports are **exact and instantaneous** — no latency,
+> no error. (2) Telemetry is **jam-immune**. The second is thin in one specific
+> place: the observer sits directly over the jammer, where received jam power is
+> maximal — roughly −51 dBm at 78 m against a −97 dBm noise floor — so its
+> incoming telemetry SINR lands near the −30 dB threshold rather than
+> comfortably above it. If the neighbour channel is ever challenged, the honest
+> answer is a **sensitivity analysis** gating telemetry at two or three SINR
+> floors, not an asserted value — the same move `routing.py` makes with
+> `reuse_limit`. Do not build it speculatively.
+
+**Do not confuse the two planes.** The *data path* is a chain, chosen per step by
+the routing DP. The *control plane* is a broadcast mesh. Restricting a drone to
+"its two chain neighbours" would conflate them — and would be circular, since you
+need to see all the links to choose which two become the chain.
 
 ### Terrain — clearance margins first, raster only if needed
 Nothing above tells the drone a tower is *in the way* before a link degrades, so
