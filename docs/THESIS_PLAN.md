@@ -19,9 +19,10 @@ A swarm of `N` quadrotors must, continuously and simultaneously:
 
 1. **Observe** — at least one drone must hold the HVT in an unoccluded ray,
    within sensor range.
-2. **Relay** — the resulting video feed must reach the MCV at **≥5 Mbps
+2. **Relay** — the resulting video feed must reach the MCV at **≥15 Mbps
    end-to-end**, which needs a multi-hop chain because no single drone can
-   usually manage both jobs at once.
+   usually manage both jobs at once. (Raised from 5 in Block E, on measured
+   evidence that at 5 the radio link never bound — [`DECISIONS.md`](DECISIONS.md).)
 3. **Survive** — finite batteries, and a jammer riding on the HVT that degrades
    links near it.
 
@@ -89,7 +90,7 @@ answer rather than merely demonstrating one:
 
 | Level | Link capacity is… | Rung isolates |
 |---|---|---|
-| **F0** | `C_max` if `distance < R` else 0 — `R` calibrated to F4's median link range | the standard abstraction |
+| **F0** | `C_max` if `distance < R` else 0 — `C_max` = 74 Mbps, `R` = **524 m**, both measured in Block F | the standard abstraction |
 | **F1** | + requires an unoccluded ray | cost of ignoring **buildings** |
 | **F2** | continuous: path loss → SINR → Shannon with modulation cap | cost of **binary** connectivity |
 | **F3** | + jammer in the SINR denominator | cost of ignoring the **threat** |
@@ -113,6 +114,14 @@ breaking the policy.
 the median link range measured under F4 in the same city. An arbitrary `R` makes
 the comparison meaningless, and it is the first thing an examiner will probe.
 
+> ✅ **Done in Block F: `R` = 524 m**, the distance at which a link's probability
+> of carrying 15 Mbps under F4 crosses 0.5. Cross-checked by degree matching
+> (418 m, inside the ±25 % sensitivity band). ⚠️ "Median link *range*" turned out
+> to have a **second reading** — the median *length* of a realised usable link,
+> which gives 266 m and makes F0 stricter than F4. Both are reported;
+> [`BLOCK_F.md`](BLOCK_F.md) argues the choice. B0's F0 mission success is flat
+> across 0.75–1.5× of `R`, so nothing in RQ1 turns on the exact value.
+
 **Why this question:** it is falsifiable either way, it reuses every line of the
 channel work, and its answer is directly useful — it tells the field which
 physics a swarm-communication simulator may safely omit.
@@ -128,10 +137,22 @@ keep the comparison honest are in [`MODELS.md`](MODELS.md):
 | DeepSets — `ρ(Σᵢ φ(xᵢ))` | ✓ | ✓ | ✗ |
 | **GNN (capacity-weighted edges)** | ✓ | ✓ | ✓ |
 
-Trained at `N=5`, evaluated zero-shot at `N ∈ {3,5,8}` **and on a second city**
-with different morphology. Transfer across urban form is a stronger
-generalisation claim than transfer across swarm size alone, and costs one extra
-OSM extract, not extra training.
+Trained at `N=5`, evaluated zero-shot at `N ∈ {3,5,8}`.
+
+> ⛔ **The second city is CUT.** It was specified as "one extra OSM extract, not
+> extra training" — and that costing was wrong. Hessen's LoD2 service does not
+> cover any other city, so a second map needs its **own height source**, its own
+> coverage gate, and a re-run of the whole Block B pipeline including the OBB
+> fitting and route sampling. That is Block-B-shaped work for one evaluation
+> column, against a March 2027 freeze. **Decided 2026-08-23**;
+> [`DECISIONS.md`](DECISIONS.md).
+>
+> **What RQ2 loses, stated plainly:** transfer across *urban form*, which was the
+> stronger of the two generalisation claims. What remains is transfer across
+> *swarm size* — `N ∈ {3,5,8}` zero-shot — which Block E showed is a genuine
+> relay-scaling test (B0 scores 36.4 / 57.2 / 74.3 % while `observed` stays flat
+> at ~93 %). Report the cross-morphology question as future work, and do not
+> imply the architecture ladder was tested across cities.
 
 **Why not simply use the GNN.** A GNN that works shows only that a GNN works —
 you cannot claim the graph structure helped without removing it and measuring the
@@ -240,7 +261,7 @@ short** — RQ1 is the contribution.
 |---|---|---|
 | B0 | **Scripted geometric heuristic** — relays placed on the MCV→HVT geodesic, one observer, fixed Ptx | Non-learned control. Answers "is MARL earning its keep?" Cheap, disproportionately valuable. |
 | E1 | Learned policy trained at each of F0–F4, all evaluated under F4 | RQ1 |
-| E2 | F4-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} × 2 cities | RQ2 |
+| E2 | F4-trained × {MLP, DeepSets, GNN} × N ∈ {3,5,8} | RQ2 — one city; the second was cut, see §2 |
 | E3a | F4-trained, neighbours' `on_path` bit **and edge features** zeroed | RQ3 — is relay reconfiguration coordinated? (was `sees_hvt`; re-pointed in Block E) |
 | E3b | F4-trained with `λ = 0` vs `λ = λ*` | RQ3 — does energy add a second driver? |
 | E4 | F4-trained with a 4-dim action (motion **+** transmit power) | RQ-power null, see below |
@@ -274,8 +295,9 @@ you actually try it?"* Cuttable under time pressure, but cheap insurance.
 
 At 10 M steps and the ≥1000 env-steps/s gate that is ~3 h per run, so **~120
 GPU-hours** for everything that appears in the thesis. RQ2's transfer evaluation
-adds no training — the policies already exist; evaluating them at `N ∈ {3,8}` and
-on the second city is minutes.
+adds no training — the policies already exist; evaluating them at `N ∈ {3,8}` is
+minutes. (The second-city column was cut; it is the only part of RQ2 that would
+have needed new *data* rather than new evaluation.)
 
 **But development dominates.** A realistic project total:
 
@@ -329,8 +351,8 @@ Fixed from sources outside this project, then the operating area solved for.
 | Ptx | 30 dBm (1 W), fixed | UAV tactical MANET radios (Silvus SC4200, Doodle Labs Helix, TrellisWare TW-950) are 0.5–2 W |
 | Jammer, in-band | 30 dBm | vehicle C-UAS barrage emitter, tens of watts over several hundred MHz |
 | Carrier / bandwidth | 3.5 GHz / 10 MHz | S/C-band tactical allocation |
-| Flight altitude | band **40–80 m**, ceiling = nominal | above the fabric, below the towers; inside TR 36.777's 22.5–300 m band. The ceiling is *derived* from W1: above 80 m a best-placed single drone can do the mission alone (3.3 % → 57.4 % from 80 to 120 m), which would dissolve the swarm premise ([`BLOCK_D.md`](BLOCK_D.md)) |
-| Rate target | 5 Mbps end-to-end | compressed HD EO/IR feed |
+| Flight altitude | band **40–80 m**, ceiling = nominal | above the fabric, below the towers; inside TR 36.777's 22.5–300 m band. ⚠️ **The ceiling is no longer derived from W1** — at 15 Mbps a best-placed solo drone fails at every altitude (0.4 % at 80 m, 0.8 % at 120 m), so W1 holds everywhere. It stands instead on **A2A occlusion**, which is RQ1's independent variable: B0 scores 56.6 % at 80 m and 74.5 % at 120 m while `observed` barely moves, so raising it deletes the effect under study ([`DECISIONS.md`](DECISIONS.md)) |
+| Rate target | **15 Mbps** end-to-end | dual EO/IR feed at low latency. **Raised from 5 in Block E**: at 5 the chain carried 8× the bar, `mission_capable` collapsed to `observed`, and a scripted baseline scored 93 % with the metric saturated. Defined once, in `reward.py` |
 | Operating area | **1500 m** | single drone manages only ~1.7 Mbps at that range (fails); the swarm reaches ~24 Mbps (feasible) |
 
 **Why Frankfurt.** The canyon ratio `H_b/W` decides everything:

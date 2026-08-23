@@ -157,8 +157,14 @@ starting point, not a finding.
 
 ## Expect a null on the in-distribution rung
 At `N=5` the graph is tiny and GNN ≈ DeepSets is a plausible outcome. The
-interesting result lives in the **off-N and cross-city transfer** columns. A
-clean null, reported as such, is still a contribution.
+interesting result lives in the **off-N transfer** columns — `N = 8` above all,
+where better control is worth +25.9 pp against +3.2 pp at `N = 3`. A clean null,
+reported as such, is still a contribution.
+
+> The cross-city column was **cut** on 2026-08-23: Hessen's LoD2 service covers
+> no other city, so a second map is a full Block-B rebuild rather than "one extra
+> OSM extract" ([`DECISIONS.md`](DECISIONS.md)). RQ2's generalisation claim is now
+> swarm size only.
 
 Block E leaves this expectation where it was, rather than strengthening it. At
 the 15 Mbps requirement a scripted controller reaches 57.2 % against a 93.0 %

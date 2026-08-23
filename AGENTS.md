@@ -13,8 +13,10 @@ line of sight, so the relay chain is geometrically necessary.
 - **RQ1 (primary):** which physical effects must a channel model include for
   learned policies to transfer? Train one policy per fidelity rung F0–F4,
   evaluate all under F4. Hypothesis: **occlusion** dominates.
-- **RQ2:** MLP → DeepSets → GNN; zero-shot transfer across `N ∈ {3,5,8}` and
-  across city morphology.
+- **RQ2:** MLP → DeepSets → GNN; zero-shot transfer across `N ∈ {3,5,8}`.
+  ⛔ The **second city is cut** (2026-08-23) — LoD2 is a Hessen-only service, so
+  it was a full Block B rebuild, not "one extra OSM extract". Analytical weight
+  sits at **N = 8** — [`docs/DECISIONS.md`](docs/DECISIONS.md).
 - **RQ3:** does the observer role **hand off** as sightlines change, and is the
   handoff coordinated and anticipatory?
 
@@ -29,8 +31,8 @@ line of sight, so the relay chain is geometrically necessary.
 | **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
-| F | Fidelity levels F0–F4 as config flags | ⬅️ **next** — spec written, [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
-| G | MAPPO integration + curriculum | not started |
+| **F** | Fidelity levels F0–F4 as config flags — RQ1's independent variable | ✅ **done**, 38 + 9 tests; `R` = **524 m** measured; F4 == the pre-Block-F env — [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
+| G | MAPPO integration + curriculum | ⬅️ **next** — spec written, [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
 | H | Sionna offline validation of the closed-form channel | not started |
 
 Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
@@ -42,8 +44,28 @@ and decided, and is the reference for the artefact's contents. Block C is
 specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_D.md`](docs/BLOCK_D.md), Block E in
 [`docs/BLOCK_E.md`](docs/BLOCK_E.md), Block F in
-[`docs/BLOCK_F.md`](docs/BLOCK_F.md). Why each block exists, what it gates and
+[`docs/BLOCK_F.md`](docs/BLOCK_F.md), Block G in
+[`docs/BLOCK_G.md`](docs/BLOCK_G.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+⚙️ **Block F built RQ1's independent variable.** `EnvConfig.fidelity` is a
+five-value enum (`"F0"`…`"F4"`, default `"F4"`) and every flag derives from it —
+`channel_occlusion`, `binary_capacity`, `channel_jammer`, `reuse_limit`. Read
+[`docs/BLOCK_F.md`](docs/BLOCK_F.md) before touching the env, and carry three
+things:
+
+1. **Fidelity gates the CHANNEL only.** The sensor, the reward's clearance term
+   and every diagnostic run on **true geometry at every rung** — measured:
+   `observed` is 92.0 % at all five, and `chain_occluded` reads **85.8 % at F0**
+   rather than the 0.0 % a gated diagnostic would report. The observation's
+   *channel* features (noise floor, clearance-to-MCV, per-edge clearance) do
+   follow the rung; its *sensor* features do not.
+2. **`R` = 524 m, measured** (`scripts/calibrate_r.py`), cross-checked by degree
+   matching at 418 m. `"median link range"` has two readings differing 2× — see
+   BLOCK_F.md before quoting it.
+3. **The ladder is cumulative in effects, not monotone in difficulty.** F1
+   (27.9 % under B0) is *harder* than F4 (56.0 %). F0, F2 and F3 all collapse
+   `mission_capable` onto `observed`, because `reuse_limit = 1` below F4.
 
 ⚠️ **Block E changed a settled parameter and several downstream expectations.**
 Read [`docs/BLOCK_E.md`](docs/BLOCK_E.md) before planning an experiment:
@@ -106,6 +128,8 @@ in both paths. Do not reason about VRAM pressure from it.
 | [`docs/BLOCK_B.md`](docs/BLOCK_B.md) | consuming `data/frankfurt_box.npz`, or touching geometry/routes |
 | [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | touching occlusion, or the geometry it consumes |
 | [`docs/BLOCK_D.md`](docs/BLOCK_D.md) | building the env core, or touching altitude / cue / sensor / the throughput gate |
+| [`docs/BLOCK_F.md`](docs/BLOCK_F.md) | touching the fidelity ladder, `R`, or anything RQ1 reports |
+| [`docs/BLOCK_G.md`](docs/BLOCK_G.md) | **building models, the trainer or the curriculum** |
 
 ---
 
@@ -198,6 +222,21 @@ mean ± std — RL returns are not normally distributed. Never report single run
 - ⛔ **Promote the `measure_envelope.py` waypoint policy to B0.** It reads
   `env.hvt_pos` off the env, so it is oracle-fed, and it is untuned. It exists
   only so Block D's numbers had a regenerable ceiling. B0 is `src/baselines/b0.py`.
+- ⛔ **Set a fidelity flag directly.** `channel_occlusion`, `binary_capacity`,
+  `channel_jammer` and `reuse_limit` are derived from `fidelity` and are not
+  fields. `channel_occlusion=False, channel_jammer=True` is not on the ladder and
+  nothing else would stop its number reaching a table.
+- ⛔ **Use `no_buildings` as "F0".** It removes buildings from the **world** —
+  sensor and diagnostics included — which is `F0-nogeo`, a separate named
+  condition. Measured: it scores 100 % mission-capable, is 82.3 % single-hop and
+  runs 1.9× faster. Folding it into F0 deletes the relay problem.
+- ⛔ **Re-capture `data/f4_golden.pt.gz` to make a test pass.** It is the only
+  record of what the env did before the ladder existed; re-capturing compares the
+  new code against itself. A failure means the environment changed, and the
+  question is which Block D or E number moved.
+- ⛔ **Compare a number measured on one device with one measured on another.**
+  `torch.Generator` streams differ per device, so the same seed draws *different
+  episodes* on MPS than on CPU. The physics is identical; the sample is not.
 - ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
 - ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
   and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
@@ -258,6 +297,7 @@ src/training/  skrl wrappers, entrypoints
 scripts/       offline data prep + scenario tooling
 configs/       YAML per experiment condition
 data/          baked artefacts — frankfurt_box.npz IS the frozen environment
+               f4_golden.pt.gz IS the pre-Block-F behavioural trace
 tests/         cross-module only — unit tests are CO-LOCATED
 docs/          reference, read on demand
 ```
@@ -279,7 +319,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 235 tests (+4 CUDA-only skips)
+uv run pytest                                    # 284 tests (+4 CUDA-only skips)
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for
@@ -310,3 +350,16 @@ uv run python scripts/eval_baseline.py                     # all sections, 5 see
 uv run python scripts/eval_baseline.py --only ladder hops
 uv run python scripts/render_episode.py --compare --route 12 --video
 ```
+Block F. `calibrate_r.py` produces `R`; `eval_fidelity.py` produces every ladder
+table in `docs/BLOCK_F.md`; `--compare-fidelity` draws the same policy at every
+rung, which is how the F0 chain running through a tower becomes visible:
+```bash
+uv run python scripts/calibrate_r.py    --seeds 8 --num-envs 64 --device mps
+uv run python scripts/eval_fidelity.py  --seeds 5 --num-envs 64 --device mps
+uv run python scripts/render_episode.py --policy b0 --route 12 --compare-fidelity
+```
+**`--device mps` is ~17× on Apple silicon** (5 min against ~1.5 h) and the
+physics is identical — but it draws *different episodes* for the same seed, so
+never mix devices within a comparison. `scripts/capture_f4_golden.py` re-freezes
+the pre-Block-F trace and refuses to run without `--force`; read its docstring
+first.

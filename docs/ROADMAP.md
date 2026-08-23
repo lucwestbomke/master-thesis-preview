@@ -39,7 +39,7 @@ simulator must include.
 | Occlusion computed fast enough to train against | batched torch ray-vs-box, 2.5D | **C** ✅ |
 | Enough samples to make 45 runs affordable | batched env at ≥1000 steps/s | **D** |
 | Proof MARL earns its keep | a scripted geometric baseline (B0) | **E** ✅ |
-| The independent variable itself | F0–F4 as config flags on one env | **F** |
+| The independent variable itself | F0–F4 as config flags on one env | **F** ✅ |
 | Policies to compare | MAPPO + a curriculum that actually learns | **G** |
 | A channel model a telecoms examiner accepts | offline Sionna agreement plot | **H** |
 
@@ -71,7 +71,7 @@ flowchart TD
     A -.-> H
 ```
 
-**Critical path: B → C → D → F → G.** Everything else hangs off it.
+**Critical path: B → C → D → F → G.** Only **G** is left on it. Everything else hangs off it.
 **E** can run alongside D once the env steps. **H** is fully parallel and touches
 only the methodology chapter.
 
@@ -87,12 +87,12 @@ was measured and decided.
 | Block | Delivers | Serves | Gate | Fails if |
 |---|---|---|---|---|
 | **A** ✅ | channel, routing, energy, reward — pure, batched, tested | all | 103 tests, hand-computed | — |
-| **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (2nd city), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
+| **B** ✅ | Frankfurt buildings + road graph as tensors; route sampler | RQ1 (occlusion is the hypothesis), RQ2 (size transfer), RQ3 (sightlines cause handoff) | height coverage verified, not assumed → **LoD2, 100 %** | heights are missing → the map is useless and the scenario is unfounded |
 | **C** ✅ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry ✅ | too slow → blows D's throughput gate. Fusion via `torch.compile` is what makes it viable |
 | **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** (transitions, not batched calls) and **≤3 h per 10 M-step run end-to-end** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** ✅ | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
-| **F** ⬅️ | F0–F4 as config flags on one env — [`BLOCK_F.md`](BLOCK_F.md) | **RQ1 directly** | all five run; `R` calibrated under F4; **F4 reproduces today's env exactly** | uncalibrated `R` → RQ1 comparison is meaningless. Also: a fidelity flag that gates the *sensor* or the *diagnostics* rather than the channel → primary result uninterpretable |
-| **G** | MAPPO + curriculum | everything | one toy run beats random | nothing learns → the usual place projects stall |
+| **F** ✅ | F0–F4 as config flags on one env — [`BLOCK_F.md`](BLOCK_F.md) | **RQ1 directly** | ✅ all five run at 1024 envs; `R` = **524 m** measured and cross-checked; **F4 reproduces the pre-Block-F env element for element** against a committed trace | uncalibrated `R` → RQ1 comparison is meaningless. Also: a fidelity flag that gates the *sensor* or the *diagnostics* rather than the channel → primary result uninterpretable |
+| **G** ⬅️ | MAPPO + curriculum — [`BLOCK_G.md`](BLOCK_G.md) | everything | one toy run beats random, then a full run beats **B0 = 57.2 %** | nothing learns → the usual place projects stall |
 | **H** | offline Sionna agreement plot | methodology credibility | plot exists | — (optional, cut freely) |
 
 **Hand to an agent:** B, C, E — well-specified and testable.
@@ -134,9 +134,10 @@ C ████████████████████  done   occlusion
 D ██████████████████░░  built  env core + adapter + skrl seam; gate met 3170x
                               (CUDA re-run of the full env still pending)
 E ████████████████████  done   B0 = 57.2 %; renderer; rate target 5 -> 15 Mbps
-F ░░░░░░░░░░░░░░░░░░░░  next   spec written: docs/BLOCK_F.md
-                              F3->F4 is a LARGE effect (+26.5 pp), not a null
-G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall
+F ████████████████████  done   ladder F0-F4 on one env; R = 524 m measured;
+                              F4 == pre-Block-F env, element for element
+G ░░░░░░░░░░░░░░░░░░░░  next   spec written: docs/BLOCK_G.md
+                              ← the usual place projects of this shape stall
 H ░░░░░░░░░░░░░░░░░░░░
 ```
 
@@ -174,6 +175,33 @@ shaped. Detail in [`BLOCK_E.md`](BLOCK_E.md), routed through
    `B0` → `B0-oracle` is −0.4 pp, i.e. perfect target knowledge is worth nothing.
 
 ⚠️ **Every Block D number is at 5 Mbps and is not comparable to a Block E one.**
+
+**Block F is done, and it moved three things.**
+
+1. **`R` is measured, not chosen: 524 m.** THESIS_PLAN calls this "the first
+   thing an examiner will probe". The pre-registered phrase *"median link range"*
+   turned out to have **two readings** differing by 2× — the median *length* of a
+   realised link (266 m) and the median *range* a link reaches (524 m). Both are
+   reported; the second is the headline, because the first measures B0's spacing
+   rather than the channel and would make F0 *stricter* than F4. A degree-matching
+   cross-check lands at 418 m, inside the ±25 % sensitivity band. **B0's F0
+   mission success is flat across 0.75–1.5× of `R`**, so the parameter is
+   uncertain and the conclusion is not.
+2. **The ladder is cumulative in effects but NOT monotone in difficulty.** F1
+   (27.9 % under B0) is *harder* than F4 (56.0 %), because occlusion is a hard
+   veto there and a graded penalty at F4. Expect an F1-trained policy to have
+   learned a world harder than the one it is tested in.
+3. **F0, F2 and F3 collapse `mission_capable` onto `observed`**, because
+   `reuse_limit = 1` below F4. Structural, not a defect — the divisor is the rung
+   that makes the mission hard — but it means the within-rung numbers understate
+   what RQ1 measures, since RQ1 evaluates every rung's policy **under F4**.
+
+The two traps [`BLOCK_F.md`](BLOCK_F.md) was written to prevent were both real
+and are now closed by construction: `observed` is **92.0 % at every rung** (the
+sensor is never gated) and `chain_occluded` reads **85.8 % at F0** rather than
+0.0 % (the diagnostic is never gated). A third, which the spec did not anticipate,
+was found while building: the **observation's** channel features had to be gated
+too, or an F0 policy would see true clearance the channel never charges it for.
 
 **Now → Feb 2027:** Phase 0. Build B–H. Write Chapters 2 and 3 in parallel.
 **End Mar 2027:** environment freeze. Pilots before, thesis material after.

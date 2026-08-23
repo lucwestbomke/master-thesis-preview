@@ -583,6 +583,169 @@ mandatory regardless — 73× applies to the 300–500 GPU-hours of development,
 unfused the slab chain holds ~8.8 GB of live intermediates that compete with the
 learner for VRAM.
 
+### Block F: gating the observation's channel features — the third sibling of decisions 1 and 2
+
+[`BLOCK_F.md`](BLOCK_F.md) settles that fidelity gates the **channel** and never
+the sensor (decision 1) or the diagnostics (decision 2). It does not say what the
+**observation** does, and the observation *is* the agent's world — so the same
+question arises there and it was answered the same way.
+
+Six of the 108 observation dims are channel state rather than sensing. Three of
+them already follow the rung for free, because they are computed from its
+capacity matrix (`on_path`, e2e capacity, per-edge capacity). The other three did
+not: the **measured noise floor**, the **clearance margin to the MCV**, and the
+**per-edge clearance margin**.
+
+**Decision: they follow the rung.** The rule, in one line: *sensor features
+report the sensor, channel features report the channel model in force,
+diagnostics report the truth.*
+
+Three reasons, in order of weight:
+
+1. **A radius simulator has no building data to put in an observation.** Under
+   F0 the clearance features have no referent; reporting the true value reports a
+   quantity that model does not possess.
+2. **Ungated, F0's observation is internally contradictory** — an edge reporting
+   74 Mbps beside a clearance feature reading −150 m. That contradiction is
+   *learnable*, and in exactly the direction that would **understate** the
+   F0 → F1 gap RQ1 exists to measure. A silent bias toward the null on the
+   primary result is the worst available failure.
+3. **It is not hypothetical.** `b0.py`'s `_update_repair` hill-climbs on
+   `edge_clr` and `edge_cap` and is, in its own docstring, *"the only part of B0
+   aimed at `chain_occluded`"*. Gated, that mechanism correctly goes inert under
+   F0 — there is nothing to repair in a radius world. Ungated, it would keep
+   repairing against buildings the channel never charges for.
+
+**The alternative reading, recorded rather than hidden.** Buildings exist in the
+world at every rung, so one could argue the drone has a *terrain* sensor and only
+the radio is abstracted. That is coherent, and it is why the ego **clearance to
+the HVT** stays on true geometry — it is the sensor's own ray, the one `sees_hvt`
+is computed from, and gating it would put the soft flag and the hard gate into
+disagreement. The split is between *sensing the target* and *sensing the link*,
+not between "geometry" and "not geometry".
+
+### Block F: `use_occlusion` was one flag doing two incompatible jobs
+
+Block D left `EnvConfig.use_occlusion` labelled "the F0 seam". It is not one —
+[`BLOCK_F.md`](BLOCK_F.md) decision 1 already establishes that it is an
+all-geometry switch that also disables the sensor and the RQ1 diagnostic. What
+the spec did not anticipate is that **the test suite depends on it for speed**:
+it appears at eight sites as `FAST`, and occlusion is **37×** the rest of the
+step on CPU (20 steps at `num_envs=8`: 0.031 s without, 1.154 s with). Deleting
+it outright would have turned a 599-step energy test from 0.9 s into 35 s.
+
+So it split in two rather than being renamed:
+
+- **`fidelity`** decides whether occlusion costs the **link** anything. The
+  sensor and the diagnostics always see the real geometry.
+- **`no_buildings`** removes buildings from the **world**. Documented as
+  not-a-rung, used by tests that are not about geometry, and it is also exactly
+  the `F0-nogeo` variant decision 1 records as the defensible alternative
+  reading of F0 — constructed as `fidelity="F0", no_buildings=True` and reported
+  under that name.
+
+The two are orthogonal on purpose. Folding `F0-nogeo` into F0 would confound the
+primary result; leaving the fast path out entirely would have cost minutes of
+suite time at every commit.
+
+### Block F: `reuse_limit` demoted from a settable field to a derived property
+
+`EnvConfig.reuse_limit` was a plain field defaulting to 3. Under the ladder it is
+the F4 rung's defining flag, so leaving it settable would have made
+`fidelity="F0", reuse_limit=3` constructible — a condition that is not on the
+ladder, which nothing would stop running, and whose number would go into a table.
+That is precisely what [`BLOCK_F.md`](BLOCK_F.md) decision 5 forbids.
+
+It is now derived from `fidelity` (1 at F0–F3, 3 at F4). Both existing readers
+(`evaluate.py`, `bench_env.py`) read `cfg.reuse_limit` and were unaffected.
+
+`PHYSICS.md` still wants the main result under more than one duplexing
+assumption, and that survives as **`duplexing_override`**, which raises anywhere
+except `fidelity="F4"`. A duplexing robustness check is a statement about the
+full model; at F0–F3 the rung already pins the divisor.
+
+### Block F: `F0 ≥ F1` end to end — the spec understated what can be asserted
+
+[`BLOCK_F.md`](BLOCK_F.md)'s correctness section groups `F0 ≥ F1 ≥ F2` together
+and calls the pair "not guaranteed". The **first half is guaranteed**: F1's
+capacity is F0's times an unoccluded mask, elementwise, and `best_relay_path` is
+monotone in the capacity matrix at a fixed `reuse_limit` (the DP is a max of mins
+and the answer a max over hop counts of monotone terms). So three orderings hold
+end-to-end and are asserted, not two: **F0 ≥ F1**, F2 ≥ F3, F3 ≥ F4.
+
+Only `F1 ↔ F2` is genuinely unordered, and only in one direction reliably: F2
+drops the radius cutoff and turns occlusion from a hard veto into a blockage
+penalty, so **F2 > F1** happens constantly. **F1 > F2** needs a link that is
+inside `R`, unoccluded, and still below the modulation cap — and a clear link at
+`R ≈ 500 m` runs ~30 dB above what 7.4 b/s/Hz needs, so at the calibrated `R` it
+may not occur in a given rollout at all. The test therefore asserts the
+mechanism at a deliberately wide `R` rather than asserting the sample.
+
+### Device-independent episode sampling — considered, rejected
+
+Found while moving Block F's measurements onto MPS. **`torch.Generator` produces
+a different stream on each device**, so `_sample_episode` draws *different routes,
+different initial charges and different cue noise* on MPS than on CPU **for the
+same seed**. The physics is not the problem — the occlusion kernel is bit-identical
+across CPU/MPS/compiled (`bench_occlusion.py`: 0.00e+00 m) and capacity agrees to
+1.9e-5 Mbps on an identical state, with every discrete output (`sees_hvt`,
+`on_edge`, `hop_count`, `chain_occluded`) exactly equal. The two devices simply
+sample different episodes.
+
+The obvious fix — draw the episode randomness on the host and copy it over — was
+rejected: with `auto_reset=True`, `_sample_episode` runs on **every step**, so it
+would put a host transfer and a sync in the training hot loop, which is exactly
+what AGENTS.md's device rule and Block D's throughput gate exist to prevent.
+
+**What follows instead is a reporting rule: a device is part of a measurement's
+provenance.** Numbers from different devices are different route samples and must
+not be compared as if they were the same experiment. `golden.py` already forces
+`device="cpu"` for this reason.
+
+### The second city for RQ2 — ⛔ cut, and the original costing was wrong
+
+THESIS_PLAN specified RQ2's cross-morphology column as costing *"one extra OSM
+extract, not extra training"*. **That costing was wrong, and it is the reason the
+column is cut rather than merely deferred.**
+
+The road graph would indeed be one extra OSM extract. The *buildings* would not.
+Block B's whole height story rests on **Hessen's LoD2 INSPIRE WFS**, which is a
+state service and covers no city outside Hessen. A second city therefore needs:
+
+- a new height source, with the coverage gate re-run from scratch — and the
+  OSM-tag fallback was already measured and **rejected** at 57–59 % area-weighted
+  coverage, putting the Deutsche-Bank-Hochhaus at 22 m;
+- the OBB fitting re-validated (the AABB-vs-OBB result is a property of
+  *Frankfurt's* 38° median part orientation, not a universal one);
+- route sampling, `MCV_MIN_REACH_M` and `CONGESTION_FACTOR` re-calibrated against
+  the new box, since the escalation table is what pins them;
+- a re-run of the occlusion map tests against a new artefact.
+
+That is a **full Block B rebuild** for one evaluation column, with a March 2027
+freeze in the way and Block G — the acknowledged stall point — not started.
+
+**What is lost, and it should be stated rather than glossed.** Transfer across
+*urban form* was the stronger of RQ2's two generalisation claims: a network could
+plausibly memorise Frankfurt's layout in a way that off-`N` transfer would not
+expose. What survives is transfer across *swarm size*, and Block E made that a
+real test rather than a formality — B0 scores 36.4 / 57.2 / 74.3 % at N = 3/5/8
+while `observed` stays flat at ~93 %, so the off-`N` columns measure **relay
+scaling**, which is the thing RQ2 is about.
+
+Two mitigations already exist and cost nothing, so quote them instead of the
+missing column:
+
+1. **The actor cannot see absolute position.** The 24 ego features contain no
+   absolute coordinate except own altitude; everything else is relative or local
+   sensing, so "the MCV is usually south-west" is not representable. Re-checked
+   when Block D added the cue vector — see the MCV-quadrant entry above.
+2. **The route bank is held out.** 256 of the routes are an eval split the
+   policy never trains on, so within-city generalisation is already measured.
+
+**Belongs in Chapter 7 as future work**, where it is a one-paragraph, genuinely
+open question. Do **not** write RQ2 as if the architecture ladder had been tested
+across cities.
+
 ### `SAGEConv` for the GNN rung
 ☠️ **Never.** It cannot ingest edge features at all, so it would silently collapse
 the GNN rung into the DeepSets rung and leave RQ2 measuring nothing — and it is
@@ -596,15 +759,15 @@ the layer people reach for by default.
 |---|---|
 | `τ_c`, `τ_l` retuning | **Block G**, deliberately not Block E. B0 now supplies the distributions the retune needs, but the thresholds live in the potential, so they can only affect *learning speed* — which cannot be measured until a learner exists. Retune once, in G, against the thing they act on |
 | Local height raster | whether the policy is visibly blind without it. **Block G** — the clearance margins shipped in Block D are the cheap half, and the raster is only worth building if a learned policy demonstrably cannot anticipate without it ([`ENVIRONMENT.md`](ENVIRONMENT.md) → Terrain) |
-| Second city for cross-morphology transfer | candidates London City (similar structure, different topology) or Barcelona (maximum contrast). Note LoD2 is a *Hessen* service — a second city needs its own height source, and the coverage gate must be re-run |
+| ~~Second city for cross-morphology transfer~~ | ⛔ **CUT 2026-08-23** — see the entry below. Not deferred: dropped, and RQ2's generalisation claim is now swarm size only |
 | `830 m` recognition / `2.8 km` detection range | **unverified — no derivation exists in this repo.** Measured to be non-binding (99.8 % of sightlines are shorter), so results are insensitive to it; if a defensible number is ever needed, derive it from a stated camera rather than assert it. Same standing as the `TODO(verify)` constants |
 | MCV spawn diversity — **investigated, no action** | see below |
 | ~~Why one route lingered 333 steps on a ~240 m bridge~~ | ✅ **closed in Block D.** Measured over the whole bank (`measure_envelope.py --only route`): longest near-stationary run is **1 step**, p90 1, no route stalls >50 steps, slowest route still averages 5.77 m/s. `grow_outward` does not stall — the 333 steps were the bridge decks, and those are gone |
-| ⚠️ **F3's jammer switch must NOT be `jammer_on`** | **Block F.** The env drives `jammer_on` from the *curriculum* stage table only. F3 ("+ jammer in the SINR denominator") needs a **separate construction-time** flag. Wiring F3 into `jammer_on` confounds RQ1's jammer rung with the curriculum ramp — [`ENVIRONMENT.md`](ENVIRONMENT.md) requires the ramp to run identically in every condition, with fidelity deciding whether it *does* anything. Block D left the seam unbuilt on purpose (no config flags for unimplemented rungs) |
+| ~~F3's jammer switch must NOT be `jammer_on`~~ | ✅ **CLOSED in Block F.** `channel_jammer` is derived from the `fidelity` enum and multiplied in *alongside* the curriculum tensor, never instead of it. `test_fidelity.py` asserts the curriculum's `jammer_on` / `speed_scale` / `episode_len` / `route_id` draws are bit-identical across all five rungs at a fixed seed, and that jam power is identically zero below F3 and strictly positive at or above it |
 | Value preprocessing for the critic | **Block G.** Pair `core.GAMMA = 0.997` with skrl's `value_preprocessor` (`RunningStandardScaler`) — returns are of order 300 and the critic has to fit that scale. Not wired in Block D because it needs the state width and belongs with the training config, not the env seam |
 | ~~Is the 3-hop regime under-exercised?~~ | ✅ **CLOSED in Block E — no.** The framing was wrong twice over. (1) Chains of **4 and 5 hops were never counted**, and `routing.py`'s divisor is `min(n, 3)`, so they are charged exactly like 3-hop ones — the regime that matters is ≥3 hops, not exactly 3. (2) The denominator included the 59 % of steps where *nobody is observing*, so no chain exists at all. Under B0 on the eval split, conditioned on a chain existing: **multi-hop 80.5 % overall and 95.6 % in the last third, with the divisor saturated at 3 on 54.2 % of late chain-steps.** Against the 4.2 % that caused the alarm that is an order of magnitude. No change to the box or the escalation — [`BLOCK_E.md`](BLOCK_E.md) §6 |
-| ⚠️ **Expect F3 → F4 to be a null: the rate-division divisor is inert** | **Block F.** Measured in Block E on B0's own trajectories at `reuse_limit ∈ {1, 3, max_hops}`: mission-capable is **93.2 % under all three**, Δ = **+0.0 pp**. Not "the reuse-3 rung is small" — the whole divisor does nothing. Cause is link margin, not hop count: B0's chain bottleneck has a **median of 37.6 Mbps, 8× the 5 Mbps bar**, and the divisor flips the outcome on **0.10 %** of chain-steps. `capacity_mbps` caps at 74 Mbps over 10 MHz, so a chain hop is nowhere near marginal. **Report the null; do not move the physics** — Ptx, bandwidth and the rate target are frozen in PHYSICS.md and derived from real radios, and the only levers (rate target, bandwidth) would invalidate Block A's tests and Chapter 3 before the freeze. [`BLOCK_E.md`](BLOCK_E.md) §6 |
-| ⚠️ **Mission success saturates at N=5 under F4 — the headline metric has ~7 pp of headroom** | **Block G and Chapter 6.** B0 reaches **93.2 %** mission-capable, and the residual is almost entirely the **launch transit**: 43 % in the first 20 s, **99.3 % after 60 s**, never-capable in 0 of 64 episodes. So "is MARL earning its keep?" cannot be answered by mission success alone at this operating point. Companion metrics that are *not* saturated: **time-to-first-capable** (B0 median 7 s), **5th-percentile capacity**, and the **N = 3** condition. RQ1 is unaffected — it compares F0–F3-trained policies *under* F4 — and carries more of the thesis than the B0 comparison does. [`BLOCK_E.md`](BLOCK_E.md) |
+| ~~Expect F3 → F4 to be a null~~ | ✅ **SUPERSEDED, twice.** The null was a 5 Mbps-era prediction; Block E re-measured it at 15 Mbps as **+26.5 pp**, and Block F reproduced it independently under the ladder at **−27.1 pp** (F3 83.1 % → F4 56.0 %). The divisor is the rung that makes the mission hard. **Do not carry the null prediction forward** — [`BLOCK_F.md`](BLOCK_F.md) |
+| ~~Mission success saturates at N=5 under F4~~ | ✅ **SUPERSEDED by the rate change.** The 93.2 %-with-7 pp-headroom figure is 5 Mbps-era. At 15 Mbps B0 reaches **57.2 %** against a 93.0 % sensor ceiling, so the headline metric has ~36 points of headroom and it is all relay geometry. The companion metrics named there (time-to-first-capable, 5th-percentile capacity, N = 3) remain worth reporting on their own merits |
 | Where should RQ2's off-N weight go? | ✅ **N = 8, not N = 3** — see the entry above. The relay premise binds hardest at N = 3 (55 % of in-sight steps fail), but *control* is worth only +3.2 pp there against +25.9 pp at N = 8. Hardness is not headroom |
 | ~~Is RQ3's handoff phenomenon frequent enough to study?~~ | ✅ **RESOLVED in Block E — by changing which phenomenon RQ3 studies.** Observer handoff is ~0.9/episode and too thin; relay-chain reconfiguration is ~52/episode and is driven by the occlusion physics RQ1 is about. RQ3 re-pointed; E3a's ablation changed with it. See the entry above and [`THESIS_PLAN.md`](THESIS_PLAN.md) |
 | Verifying TR 36.777 and rotorcraft constants against primary sources | you, with the actual documents — **do not cite numbers an AI produced** |
