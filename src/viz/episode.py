@@ -42,6 +42,10 @@ class EpisodeTrace:
     hops: np.ndarray  # (T,)
     sees: np.ndarray  # (T, N) bool
     occluded: np.ndarray  # (T,)
+    # Which rung of Block F's ladder this was flown under. Part of the trace
+    # because a figure of an F0 episode that does not say so is a figure of a
+    # chain running through a tower with no explanation attached.
+    fidelity: str = "F4"
 
     @property
     def observer(self) -> np.ndarray:
@@ -106,8 +110,17 @@ def fly(
     num_drones: int = 5,
     seed: int = 0,
     steps: int = EPISODE_STEPS,
+    fidelity: str = "F4",
+    no_buildings: bool = False,
 ) -> EpisodeTrace:
-    """Run one episode of the real env on one route and record it."""
+    """Run one episode of the real env on one route and record it.
+
+    `fidelity` selects the Block F rung. Flying the same route and the same
+    policy at F0 and at F4 and putting the two figures side by side is the
+    cheapest check that the ladder does what it claims -- under F0 the chain
+    visibly runs straight through the tower cluster, which is the whole content
+    of the hypothesis RQ1 tests.
+    """
     from ..env.core import EnvConfig
 
     env = BatchedSwarmEnv(
@@ -118,6 +131,8 @@ def fly(
             auto_reset=False,
             compile_occlusion=False,
             stage_weights=(0.0, 0.0, 0.0, 1.0),
+            fidelity=fidelity,
+            no_buildings=no_buildings,
         )
     )
     obs = env.reset()
@@ -155,6 +170,7 @@ def fly(
         hops=stack("hops"),
         sees=stack("sees"),
         occluded=stack("occluded"),
+        fidelity="F0-nogeo" if no_buildings else fidelity,
     )
 
 
@@ -252,7 +268,7 @@ def figure(trace: EpisodeTrace, out: Path | None = None, art: dict | None = None
     ax.set_aspect("equal")
     ax.legend(loc="upper left", fontsize=9)
     ax.set_title(
-        f"{trace.policy} — route #{trace.route_idx} — "
+        f"{trace.policy} @ {trace.fidelity} — route #{trace.route_idx} — "
         f"mission-capable {trace.capable.mean() * 100:.0f} % of {len(t) * DT_S:.0f} s"
     )
     ax.set_xlabel("metres east of box centre")
@@ -424,7 +440,7 @@ def animate(
         sep = float(np.linalg.norm(p - trace.mcv))
         state = "CAPABLE" if trace.capable[i] else "no feed"
         title.set_text(
-            f"{trace.policy}  route #{trace.route_idx}   t = {t_s[i]:5.1f} s   "
+            f"{trace.policy} @ {trace.fidelity}  route #{trace.route_idx}   t = {t_s[i]:5.1f} s   "
             f"separation {sep:4.0f} m   {trace.hops[i]} hops   "
             f"{trace.capacity[i]:5.1f} Mbps   {state}"
         )

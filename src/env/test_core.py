@@ -75,7 +75,7 @@ def test_stationary_stage_freezes_the_hvt():
 def test_hovering_burns_about_seven_percent_of_the_pack():
     """PHYSICS.md predicts ~7 % over a 240 s episode, and RQ3's reframing from
     energy rotation to geometric handoff depends on batteries not binding."""
-    env = make(num_envs=4, use_occlusion=False)
+    env = make(num_envs=4, no_buildings=True)
     env.battery = torch.ones_like(env.battery)
     env.battery_scale = torch.ones_like(env.battery_scale)
     # One step short of truncation: crossing it re-randomises the charge, and
@@ -107,7 +107,7 @@ def test_scheduled_mac_matches_a_one_hot_tx_mask():
     env = make(num_envs=4, num_drones=4)
     r = env.cfg.n_radio
     pos_k = torch.cat([env.drone_pos, env.mcv_pos.unsqueeze(1), env.hvt_pos.unsqueeze(1)], dim=1)
-    clearance = env._clearance(pos_k)
+    _true, clearance = env._clearance(pos_k)
     got, jam_mw = env._capacity(pos_k, clearance)
 
     radio = pos_k[:, :r]
@@ -135,7 +135,7 @@ def test_positions_stay_in_the_box_and_the_altitude_band():
     """The band is a model-validity envelope: below 40 m the A2G model is out of
     spec and occlusion's endpoint convention starts letting drones see through
     their own building (docs/BLOCK_D.md)."""
-    env = make(num_envs=8, use_occlusion=False)
+    env = make(num_envs=8, no_buildings=True)
     torch.manual_seed(0)
     for _ in range(100):
         env.step(torch.empty_like(zeros_like_actions(env)).uniform_(-1.0, 1.0))
@@ -165,7 +165,7 @@ def test_episode_truncates_at_the_stage_length():
     for idx, stage in enumerate(STAGES):
         weights = [0.0] * len(STAGES)
         weights[idx] = 1.0
-        env = make(num_envs=4, stage_weights=tuple(weights), use_occlusion=False)
+        env = make(num_envs=4, stage_weights=tuple(weights), no_buildings=True)
         for step in range(1, stage.episode_steps + 1):
             _, _, term, trunc, _ = env.step(zeros_like_actions(env))
             assert not term.any(), "hovering must not terminate"
@@ -213,7 +213,7 @@ def test_terminal_flag_reaches_the_shaping_term(monkeypatch):
 
 
 def test_auto_reset_restarts_the_episode_cleanly():
-    env = make(num_envs=4, stage_weights=(1.0, 0.0, 0.0, 0.0), use_occlusion=False)
+    env = make(num_envs=4, stage_weights=(1.0, 0.0, 0.0, 0.0), no_buildings=True)
     for _ in range(STAGES[0].episode_steps):
         env.step(zeros_like_actions(env))
     assert torch.all(env.t == 0)
@@ -230,7 +230,7 @@ def test_potential_is_recomputed_after_a_reset_not_carried_over():
     that snapshot survives an episode boundary it injects a large spurious
     shaping term on the first step of every new episode, and it attacks exactly
     the invariance PBRS was chosen to guarantee."""
-    env = make(num_envs=4, stage_weights=(1.0, 0.0, 0.0, 0.0), use_occlusion=False)
+    env = make(num_envs=4, stage_weights=(1.0, 0.0, 0.0, 0.0), no_buildings=True)
     for _ in range(STAGES[0].episode_steps):
         env.step(zeros_like_actions(env))
 
@@ -362,7 +362,7 @@ def test_actor_sees_no_absolute_position():
     absolute reference; the whole scenario is then translated and the actor's
     observation must not move.
     """
-    env = make(num_envs=4, use_occlusion=False)
+    env = make(num_envs=4, no_buildings=True)
     obs_a, *_ = env.step(zeros_like_actions(env))
     before = {k: v.clone() for k, v in obs_a.items()}
 
@@ -419,7 +419,7 @@ def test_state_dim_matches_the_critic_state_it_describes():
     drifts from `_critic_state`, the mismatch surfaces as a shape error deep in
     the learner rather than here."""
     for n in (3, 5, 8):
-        env = make(num_envs=2, num_drones=n, use_occlusion=False)
+        env = make(num_envs=2, num_drones=n, no_buildings=True)
         obs, *_ = env.step(zeros_like_actions(env))
         assert obs["state"].shape[-1] == env.cfg.state_dim, n
 

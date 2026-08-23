@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -203,6 +204,73 @@ STAGES: tuple[CurriculumStage, ...] = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# The fidelity ladder -- RQ1's independent variable. docs/BLOCK_F.md.
+# --------------------------------------------------------------------------- #
+
+Fidelity = Literal["F0", "F1", "F2", "F3", "F4"]
+
+
+@dataclass(frozen=True)
+class FidelityRung:
+    """What one rung of THESIS_PLAN §2's ladder changes about the CHANNEL.
+
+    Nothing here touches the sensor, the diagnostics or the curriculum. That is
+    the whole content of `docs/BLOCK_F.md` decisions 1, 2 and 4, and it is what
+    keeps RQ1's attribution interpretable: the F0->F1 gap is the cost of
+    ignoring buildings *in the radio*, not the cost of deleting the city.
+    """
+
+    channel_occlusion: bool  # does a blocked ray cost the LINK anything?
+    binary_capacity: bool  # C_max-or-nothing, vs path loss -> SINR -> Shannon
+    channel_jammer: bool  # is the emitter in the SINR denominator?
+    reuse_limit: int  # 1 = no rate division; 3 = min(n, 3), the full model
+
+
+LADDER: dict[str, FidelityRung] = {
+    # rung  occlusion  binary  jammer  reuse
+    "F0": FidelityRung(False, True, False, 1),  # the connectivity-radius abstraction
+    "F1": FidelityRung(True, True, False, 1),  # + buildings
+    "F2": FidelityRung(True, False, False, 1),  # + continuous capacity
+    "F3": FidelityRung(True, False, True, 1),  # + the threat
+    "F4": FidelityRung(True, False, True, 3),  # + relay cost == today's env
+}
+
+# `C_max` for the binary rungs (F0, F1). NOT a new free parameter: it is
+# `channel.capacity_mbps`'s own ceiling, which is where a "connected" link lands
+# when nothing degrades it. docs/BLOCK_F.md decision 3.
+#
+# The consequence is the point of the abstraction under test: 74 Mbps against a
+# 15 Mbps requirement means a chain that exists geometrically always delivers,
+# so under F0 `mission_capable` reduces to "someone sees the HVT and a chain of
+# at most `max_hops` links exists". F0 is meant to be permissive.
+F0_CAPACITY_MBPS = channel.DEFAULT_SE_CAP_BPS_HZ * BANDWIDTH_HZ / 1e6
+
+# The connectivity radius `R`. **Measured, not chosen** -- THESIS_PLAN §2 makes
+# it the fairness requirement on RQ1 ("an arbitrary `R` makes the comparison
+# meaningless, and it is the first thing an examiner will probe"), and the
+# pre-registered method is the median range of a link usable under F4 in the
+# same city.
+#
+# **Measured: 524 m** [IQR 22] -- `scripts/calibrate_r.py`, 8 seeds x 64 eval
+# episodes under B0. It is the distance at which a link's probability of
+# carrying the 15 Mbps requirement under F4 crosses 0.5, which is the "median
+# link RANGE" reading of the pre-registration: a range is a reach, and half of
+# link geometries reach further than this.
+#
+# Cross-checked by degree matching (choose R so F0 and F4 have the same mean
+# usable links per node): **418 m**, which is 0.80x and falls inside the +-25 %
+# sensitivity band the same script sweeps. Replicated on a second device and
+# sample size at 536 m [39]. The competing "median realised link LENGTH" reading
+# gives 266 m and is rejected in docs/BLOCK_F.md -- it measures B0's spacing
+# rather than the channel's reach, and it makes F0 *stricter* than F4, inverting
+# the abstraction under test.
+#
+# Nothing in RQ1 turns on the exact value: B0's mission success under F0 is flat
+# at 93.4 % from 0.75x to 1.5x of it. Full tables in docs/BLOCK_F.md.
+F0_RADIUS_M = 524.0
+
+
 @dataclass(frozen=True)
 class EnvConfig:
     num_envs: int
@@ -211,7 +279,6 @@ class EnvConfig:
     seed: int = 0
     dt_s: float = DT_S
     occlusion_chunk: int = 512
-    reuse_limit: int = 3
     gamma: float = GAMMA
     eval_routes: bool = False
     # Training wants auto-reset; the PettingZoo adapter must NOT have it, because
@@ -226,16 +293,89 @@ class EnvConfig:
     # a schedule that must be IDENTICAL across fidelity levels or RQ1 is
     # confounded (docs/ENVIRONMENT.md).
     stage_weights: tuple[float, ...] = (0.0, 0.0, 0.0, 1.0)
-    # Fidelity seams for Block F. Only the full model (=F4) is wired in D.
+
+    # --- RQ1's independent variable. One composed enum, never loose flags. --- #
     #
-    # WARNING for F3 ("+ jammer in the SINR denominator"): do NOT implement it by
-    # driving `jammer_on`. That tensor is the CURRICULUM's jammer axis, sampled
-    # per episode from the stage table. docs/ENVIRONMENT.md requires the jammer
-    # ramp to run identically in every fidelity condition, with the fidelity
-    # level deciding whether it does anything -- so F3 needs its own
-    # construction-time flag. Reusing `jammer_on` confounds RQ1's jammer rung
-    # with the curriculum and there is no way to separate them afterwards.
-    use_occlusion: bool = True
+    # `F4` is the default because `F4` IS the environment Blocks D and E
+    # measured; `src/env/test_golden.py` proves it against a frozen trace.
+    #
+    # The individual flags are DERIVED (below) and deliberately not settable.
+    # `channel_occlusion=False, channel_jammer=True` is not a rung on the
+    # ladder, nothing would stop it running, and the number it produced would go
+    # into a table -- docs/BLOCK_F.md decision 5.
+    fidelity: Fidelity = "F4"
+    # `R` for the binary rungs. Measured, not chosen: scripts/calibrate_r.py,
+    # and `test_fidelity.py` pins this default against what that script reports.
+    #
+    # Settable because the sensitivity sweep docs/BLOCK_F.md requires (+-25 %,
+    # +-50 %) has to vary it. INERT at F2-F4, which model capacity continuously
+    # and have no radius at all -- a sweep over `radius_m` at those rungs
+    # produces identical numbers, which is the correct behaviour rather than a
+    # silent one.
+    radius_m: float = F0_RADIUS_M
+
+    # ⚠️ NOT a fidelity flag, and not on the ladder. This removes buildings from
+    # the WORLD -- sensor, jammer line of sight and diagnostics included -- which
+    # is a *city with no buildings*, not a channel abstraction. Two legitimate
+    # uses and no others:
+    #
+    #   1. tests that are not about geometry (occlusion is ~37x the rest of the
+    #      step on CPU, so the suite would take minutes without it);
+    #   2. the `F0-nogeo` sensitivity rung docs/BLOCK_F.md decision 1 records as
+    #      the defensible alternative reading -- a reviewer may argue that papers
+    #      using a radius channel model no buildings at all. Constructed as
+    #      `fidelity="F0", no_buildings=True`, reported under that name, and
+    #      NEVER folded into F0: it confounds the primary result.
+    no_buildings: bool = False
+
+    # PHYSICS.md asks for the main result under more than one duplexing
+    # assumption; `routing.py` exposes `reuse_limit` for exactly that. It is a
+    # robustness check on the FULL model, so it is refused anywhere else -- at
+    # F0-F3 the rung already pins the divisor and an override would silently
+    # produce an off-ladder condition.
+    duplexing_override: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.fidelity not in LADDER:
+            raise ValueError(f"fidelity must be one of {sorted(LADDER)}, got {self.fidelity!r}")
+        if self.duplexing_override is not None:
+            if self.fidelity != "F4":
+                raise ValueError(
+                    "duplexing_override is a robustness check on the full model and is "
+                    f"only valid at fidelity='F4', not {self.fidelity!r}. At F0-F3 the "
+                    "rung pins the divisor; overriding it produces a condition that is "
+                    "not on the ladder (docs/BLOCK_F.md decision 5)."
+                )
+            if self.duplexing_override < 1:
+                raise ValueError(f"duplexing_override must be >= 1, got {self.duplexing_override}")
+        if self.radius_m <= 0.0:
+            raise ValueError(f"radius_m must be positive, got {self.radius_m}")
+
+    @property
+    def rung(self) -> FidelityRung:
+        return LADDER[self.fidelity]
+
+    @property
+    def channel_occlusion(self) -> bool:
+        """Does a blocked ray cost the LINK anything? The sensor and every
+        diagnostic use true geometry regardless -- decisions 1 and 2."""
+        return self.rung.channel_occlusion
+
+    @property
+    def binary_capacity(self) -> bool:
+        return self.rung.binary_capacity
+
+    @property
+    def channel_jammer(self) -> bool:
+        """F3's switch. Multiplied in ALONGSIDE the curriculum's `jammer_on`,
+        never instead of it: the ramp must run identically in every fidelity
+        condition or RQ1's jammer rung is confounded with the curriculum and the
+        two cannot be separated afterwards (decision 4)."""
+        return self.rung.channel_jammer
+
+    @property
+    def reuse_limit(self) -> int:
+        return self.rung.reuse_limit if self.duplexing_override is None else self.duplexing_override
 
     @property
     def n_geometric(self) -> int:
@@ -463,8 +603,33 @@ class BatchedSwarmEnv:
         z = torch.full((xy.shape[0], 1), HVT_Z_M, device=self.device)
         return torch.cat([xy, z], dim=-1), torch.cat([vel_xy, torch.zeros_like(z)], dim=-1)
 
-    def _clearance(self, pos_k: Tensor) -> Tensor:
-        """Line of sight for every node pair.
+    def _free_clearance(self, pos_k: Tensor) -> Tensor:
+        k = pos_k.shape[1]
+        return torch.full((pos_k.shape[0], k, k), occlusion.FREE_CLEARANCE_M, device=pos_k.device)
+
+    def _clearance(self, pos_k: Tensor) -> tuple[Tensor, Tensor]:
+        """Line of sight for every node pair, twice: `(true, channel)`.
+
+        **`true` is the world and `channel` is the model of it.** The sensor,
+        the reward's observation potential and every diagnostic read `true` at
+        every rung; only `_capacity` and the channel-derived observation
+        features read `channel`. That split is docs/BLOCK_F.md decisions 1 and 2
+        and it is what keeps RQ1 interpretable:
+
+        - if the sensor were gated, F0 would be *a city with no buildings* and
+          the F0->F1 gap would conflate sensor occlusion with link occlusion --
+          and Block E measured those at wildly different sizes (observation is
+          ~93 % solved by geometry while the chain binds), so the larger,
+          uninteresting effect would swamp the smaller, interesting one;
+        - if `chain_occluded` were gated it would read 0.0 % under F0 *by
+          construction*, destroying the headline failure-attribution metric in
+          the one condition it exists to expose.
+
+        The two are the same tensor whenever the rung models occlusion, so the
+        split costs an allocation at F0 and nothing anywhere else. Occlusion
+        itself runs at every rung, which is why **no rung is cheaper to
+        simulate** -- good for the budget and good for comparability, since a
+        faster rung would quietly get more samples per GPU-hour.
 
         Only this kernel is compiled, not `step()`. Two independent reasons,
         both measured at D1 and both to be re-checked on CUDA:
@@ -481,23 +646,49 @@ class BatchedSwarmEnv:
         Since occlusion is 99.7 % of the eager step, compiling it alone captures
         essentially all the available speedup anyway.
         """
-        if not self.cfg.use_occlusion:  # F0 seam -- Block F turns this off
-            k = pos_k.shape[1]
-            return torch.full(
-                (pos_k.shape[0], k, k), occlusion.FREE_CLEARANCE_M, device=pos_k.device
-            )
-        return self._pairwise(pos_k, self.boxes, self.heights, chunk=self.cfg.occlusion_chunk)
+        true = (
+            self._free_clearance(pos_k)
+            if self.cfg.no_buildings
+            else self._pairwise(pos_k, self.boxes, self.heights, chunk=self.cfg.occlusion_chunk)
+        )
+        channel_clr = true if self.cfg.channel_occlusion else self._free_clearance(pos_k)
+        return true, channel_clr
 
-    def _jammer_mw(self, radio: Tensor, clearance: Tensor) -> Tensor:
-        """Barrage emitter riding the HVT, reaching every radio node."""
+    def _jammer_mw(self, radio: Tensor, channel_clr: Tensor) -> Tensor:
+        """Barrage emitter riding the HVT, reaching every radio node.
+
+        `channel_jammer` is F3's switch and is multiplied in ALONGSIDE the
+        curriculum's `jammer_on`, never instead of it -- docs/BLOCK_F.md
+        decision 4. `jammer_on` is drawn per episode from the stage table and
+        must ramp identically in every fidelity condition, with the rung
+        deciding whether it *does* anything; driving F3 from it would confound
+        RQ1's jammer rung with the curriculum unrecoverably.
+
+        Reads the channel's clearance, not the true one, so the emitter's line
+        of sight is modelled at the same fidelity as the links it degrades.
+        Under F3 and F4 the two are identical; under F0-F2 the result is zeroed
+        anyway.
+        """
         r = self.cfg.n_radio
         d = (radio - self.hvt_pos.unsqueeze(1)).norm(dim=-1)
-        los = clearance[:, :r, self.hvt_idx] >= 0.0
+        los = channel_clr[:, :r, self.hvt_idx] >= 0.0
         pathloss = channel.pathloss_a2g_umi_av_db(d, radio[..., 2], los)
-        return channel.dbm_to_mw(JAMMER_DBM - pathloss) * self.jammer_on.unsqueeze(-1)
+        return (
+            channel.dbm_to_mw(JAMMER_DBM - pathloss)
+            * self.jammer_on.unsqueeze(-1)
+            * float(self.cfg.channel_jammer)
+        )
 
-    def _capacity(self, pos_k: Tensor, clearance: Tensor) -> tuple[Tensor, Tensor]:
-        """Per-link capacity under the scheduled-MAC assumption.
+    def _capacity(self, pos_k: Tensor, channel_clr: Tensor) -> tuple[Tensor, Tensor]:
+        """Per-link capacity **under the rung's channel model**.
+
+        F0/F1 -- binary. `C_max` if the pair is within `R`, and (F1 only) if the
+        ray is unoccluded. This is the connectivity-radius abstraction RQ1 is
+        about, and the two rungs share one branch because at F0 `channel_clr` is
+        free everywhere, so the occlusion term is vacuously true.
+
+        F2/F3/F4 -- continuous. Path loss -> SINR -> Shannon with the modulation
+        cap, which is the model Block A built and PHYSICS.md documents.
 
         `docs/PHYSICS.md` requires `tx_mask` to hold only the transmitters active
         in the evaluated slot, which for a <=3-hop reuse-3 chain is one node. No
@@ -507,10 +698,21 @@ class BatchedSwarmEnv:
         then identically zero and SINR reduces to S / (J + N0). Pinned against
         `channel.sinr_db` with a one-hot mask in the tests.
         """
-        r = self.cfg.n_radio
+        cfg = self.cfg
+        r = cfg.n_radio
         radio = pos_k[:, :r]
         d3d = channel.pairwise_distance_m(radio)
-        occluded = clearance[:, :r, :r] < 0.0
+        occluded = channel_clr[:, :r, :r] < 0.0
+
+        jam_mw = self._jammer_mw(radio, channel_clr)
+
+        if cfg.binary_capacity:
+            # No path loss, no SINR: "connected" is a predicate on geometry, and
+            # a connected link runs at the modulation ceiling. The jammer cannot
+            # enter here even in principle, which is why F2 -- and not F1 -- is
+            # the rung that has to come before F3.
+            usable = (d3d < cfg.radius_m) & ~occluded
+            return usable.to(d3d.dtype) * F0_CAPACITY_MBPS * self.no_self, jam_mw
 
         z = radio[..., 2]
         h_uav = torch.maximum(z.unsqueeze(-1), z.unsqueeze(-2))
@@ -521,7 +723,6 @@ class BatchedSwarmEnv:
         )
         prx_dbm = channel.received_power_dbm(self.ptx, pathloss)
 
-        jam_mw = self._jammer_mw(radio, clearance)
         denom_mw = jam_mw.unsqueeze(1) + self.noise_mw  # (B, 1, R): landing on rx j
         sinr_db = prx_dbm - channel.mw_to_dbm(denom_mw)
         return channel.capacity_mbps(sinr_db, BANDWIDTH_HZ) * self.no_self, jam_mw
@@ -534,13 +735,16 @@ class BatchedSwarmEnv:
         pos_k = torch.cat(
             [self.drone_pos, self.mcv_pos.unsqueeze(1), self.hvt_pos.unsqueeze(1)], dim=1
         )
-        clearance = self._clearance(pos_k)
+        true_clr, channel_clr = self._clearance(pos_k)
 
-        clr_hvt = clearance[:, :n, self.hvt_idx]
+        # The SENSOR runs on true geometry at every rung. RQ1 asks which effects
+        # a *channel model* must include, and a camera is not part of a channel
+        # model -- docs/BLOCK_F.md decision 1.
+        clr_hvt = true_clr[:, :n, self.hvt_idx]
         dist_hvt = (self.drone_pos - self.hvt_pos.unsqueeze(1)).norm(dim=-1)
         sees = (clr_hvt >= 0.0) & (dist_hvt <= SENSOR_RANGE_M)
 
-        capacity, jam_mw = self._capacity(pos_k, clearance)
+        capacity, jam_mw = self._capacity(pos_k, channel_clr)
         source = torch.cat([sees, torch.zeros_like(sees[:, :1])], dim=1)
         e2e, on_path, on_edge, hops = routing.best_relay_path(
             capacity,
@@ -560,7 +764,11 @@ class BatchedSwarmEnv:
             accel_ms2=self.last_accel,
         )
         aux = {
-            "clearance": clearance,
+            # What the OBSERVATION's channel features report -- the model in
+            # force, not the world. See `_observe`.
+            "clearance": channel_clr,
+            # What the SENSOR and every DIAGNOSTIC report. Never gated.
+            "true_clearance": true_clr,
             "capacity_mbps": capacity,
             "e2e_capacity_mbps": e2e,
             "sees_hvt": sees,
@@ -570,7 +778,15 @@ class BatchedSwarmEnv:
             "jam_mw": jam_mw,
             # RQ1's headline diagnostic: does the chain the router actually chose
             # run through a building? A radius-trained policy's signature.
-            "chain_occluded": (on_edge & (clearance[:, : cfg.n_radio, : cfg.n_radio] < 0.0))
+            #
+            # ⚠️ TRUE clearance, always. Computed from the fidelity-gated
+            # clearance it would read 0.0 % under F0 *by construction* -- the F0
+            # policy routes straight through towers and the metric would report
+            # that it never happens, destroying the failure-attribution number
+            # in the one condition it exists to expose. Decision 2, and the
+            # reason decision 1 makes it free: the real clearance is computed at
+            # every rung anyway.
+            "chain_occluded": (on_edge & (true_clr[:, : cfg.n_radio, : cfg.n_radio] < 0.0))
             .any(dim=-1)
             .any(dim=-1),
         }
@@ -586,6 +802,28 @@ class BatchedSwarmEnv:
         The actor may only see what a real drone could sense or receive; global
         state belongs to the critic. Violating that turns decentralized execution
         into centralized execution and invalidates CTDE (docs/ENVIRONMENT.md).
+
+        Three of the 108 dims are **channel state** rather than sensing, and they
+        report the channel model in force -- the measured noise floor, the
+        clearance margin on the link to the MCV, and the per-edge clearance
+        margin. The other three channel-derived features (`on_path`, e2e
+        capacity, per-edge capacity) follow the rung for free, since they are
+        computed from its capacity matrix.
+
+        The rule, in one line: **sensor features report the sensor, channel
+        features report the channel model, diagnostics report the truth.**
+
+        Why gate them at all -- docs/BLOCK_F.md decisions 1 and 2 settle the
+        sensor and the diagnostics but not this, and it is their third sibling.
+        A radius simulator has no building data to put in an observation, so
+        reporting true clearance under F0 would be reporting a quantity that
+        model does not possess. Worse, it would leave F0's observation
+        *internally contradictory* -- an edge reporting 74 Mbps beside a
+        clearance feature reading -150 m -- and that contradiction is learnable
+        in exactly the direction that would understate the F0->F1 gap RQ1 exists
+        to measure. It is not hypothetical: B0's link repair hill-climbs on
+        these two features, and ungated it would keep repairing against
+        buildings the channel never charges it for.
         """
         cfg = self.cfg
         b, n = cfg.num_envs, cfg.num_drones
@@ -599,7 +837,11 @@ class BatchedSwarmEnv:
         def cap(x: Tensor) -> Tensor:
             return (x / CAPACITY_THRESHOLD_MBPS).clamp(0.0, CAPACITY_CLAMP)
 
-        clr_hvt = clearance[:, :n, self.hvt_idx]
+        # Sensor quantity -> true geometry. It is the same ray `sees_hvt` is
+        # computed from, so gating it would put the soft flag and the hard gate
+        # into disagreement under F0.
+        clr_hvt = aux["true_clearance"][:, :n, self.hvt_idx]
+        # Radio quantity: the drone's link to the MCV -> the channel's geometry.
         clr_mcv = clearance[:, :n, self.mcv_idx]
         rel_hvt = (self.hvt_pos.unsqueeze(1) - pos) / POS_SCALE_M
         noise_dbm = channel.mw_to_dbm(aux["jam_mw"][:, :n] + self.noise_mw)

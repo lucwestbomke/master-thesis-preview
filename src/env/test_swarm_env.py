@@ -16,7 +16,7 @@ from pettingzoo.test import parallel_api_test
 from .core import ACTION_DIM, FLAT_DIM, BatchedSwarmEnv, EnvConfig
 from .swarm_env import SwarmRelayEnv
 
-FAST = {"use_occlusion": False, "stage_weights": (1.0, 0.0, 0.0, 0.0)}  # stage 1: 150 steps
+FAST = {"no_buildings": True, "stage_weights": (1.0, 0.0, 0.0, 0.0)}  # stage 1: 150 steps
 
 
 def test_pettingzoo_parallel_api_compliance():

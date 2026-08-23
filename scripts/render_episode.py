@@ -32,6 +32,9 @@ from src.viz.episode import OUTDIR, animate, figure, fly
 from src.viz.scene import inside_any_box, load_artefact
 
 POLICIES = ("random", "waypoint", "b0-geodesic", "b0", "b0-oracle")
+#: Block F rungs, plus the explicitly-named building-free variant. Same
+#: policy, same route, five worlds -- the visual half of Block F.
+FIDELITIES = ("F0", "F0-nogeo", "F1", "F2", "F3", "F4")
 
 
 def worst_route(art: dict, stride: int = 8) -> int:
@@ -55,12 +58,12 @@ def report(trace) -> None:
     obs = trace.observer
     handoffs = int(((obs[1:] != obs[:-1]) & (obs[1:] >= 0) & (obs[:-1] >= 0)).sum())
     print(
-        f"  {trace.policy:<12} capable {trace.capable.mean() * 100:5.1f} %   "
+        f"  {trace.policy + '@' + trace.fidelity:<20} capable {trace.capable.mean() * 100:5.1f} %   "
         f"observed {trace.sees.any(-1).mean() * 100:5.1f} %   "
         f"chain occluded {trace.occluded.mean() * 100:5.1f} %"
     )
     print(
-        f"  {'':<12} hops: median {np.median(hops[chain]) if chain.any() else 0:.0f}, "
+        f"  {'':<20} hops: median {np.median(hops[chain]) if chain.any() else 0:.0f}, "
         f"max {hops.max()}   e2e p5 {np.quantile(trace.capacity, 0.05):.1f} Mbps   "
         f"{handoffs} handoffs"
     )
@@ -72,6 +75,12 @@ def main() -> None:
     ap.add_argument("--worst", action="store_true", help="pick the route most often indoors")
     ap.add_argument("--policy", choices=POLICIES, default="b0")
     ap.add_argument("--compare", action="store_true", help="one figure per policy, same route")
+    ap.add_argument("--fidelity", choices=FIDELITIES, default="F4", help="Block F rung")
+    ap.add_argument(
+        "--compare-fidelity",
+        action="store_true",
+        help="one figure per Block F rung, same policy and route",
+    )
     ap.add_argument("--drones", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--video", action="store_true", help="also write an mp4")
@@ -84,25 +93,35 @@ def main() -> None:
     art = load_artefact()
     route = worst_route(art) if a.worst else min(a.route, len(art["routes"]) - 1)
     policies = POLICIES if a.compare else (a.policy,)
+    rungs = FIDELITIES if a.compare_fidelity else (a.fidelity,)
 
     print(f"route #{route}, N={a.drones}, seed {a.seed}")
-    for name in policies:
-        trace = fly(route, policy=name, num_drones=a.drones, seed=a.seed)
-        report(trace)
-        # Vector, because these go into the thesis. Raster only for the video.
-        fig_path = a.out / f"route{route}_{name}.pdf"
-        figure(trace, out=fig_path, art=art)
-        print(f"    figure -> {fig_path}")
-        if a.video:
-            vid = animate(
-                trace,
-                a.out / f"route{route}_{name}.mp4",
-                fps=a.fps,
-                stride=a.stride,
-                zoom=a.zoom,
-                art=art,
+    for rung in rungs:
+        for name in policies:
+            trace = fly(
+                route,
+                policy=name,
+                num_drones=a.drones,
+                seed=a.seed,
+                fidelity="F0" if rung == "F0-nogeo" else rung,
+                no_buildings=rung == "F0-nogeo",
             )
-            print(f"    video  -> {vid}")
+            report(trace)
+            stem = f"route{route}_{name}" + ("" if rung == "F4" else f"_{rung}")
+            # Vector, because these go into the thesis. Raster only for the video.
+            fig_path = a.out / f"{stem}.pdf"
+            figure(trace, out=fig_path, art=art)
+            print(f"    figure -> {fig_path}")
+            if a.video:
+                vid = animate(
+                    trace,
+                    a.out / f"{stem}.mp4",
+                    fps=a.fps,
+                    stride=a.stride,
+                    zoom=a.zoom,
+                    art=art,
+                )
+                print(f"    video  -> {vid}")
 
 
 if __name__ == "__main__":

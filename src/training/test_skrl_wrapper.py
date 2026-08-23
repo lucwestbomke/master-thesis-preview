@@ -25,7 +25,7 @@ from torch import nn
 from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv, EnvConfig
 from .skrl_wrapper import MAPPO_OVERRIDES, SwarmMultiAgentWrapper, mappo_cfg
 
-FAST = {"use_occlusion": False, "compile_occlusion": False, "stage_weights": (1.0, 0.0, 0.0, 0.0)}
+FAST = {"no_buildings": True, "compile_occlusion": False, "stage_weights": (1.0, 0.0, 0.0, 0.0)}
 
 
 class Policy(GaussianMixin, Model):
