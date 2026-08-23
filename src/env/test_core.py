@@ -422,3 +422,53 @@ def test_state_dim_matches_the_critic_state_it_describes():
         env = make(num_envs=2, num_drones=n, use_occlusion=False)
         obs, *_ = env.step(zeros_like_actions(env))
         assert obs["state"].shape[-1] == env.cfg.state_dim, n
+
+
+# --------------------------------------------------------------------------- #
+# The flat packing, and its inverse
+# --------------------------------------------------------------------------- #
+
+
+def test_unpack_flat_inverts_pack():
+    """`unpack_flat` must recover exactly what `_pack` put in.
+
+    Everything downstream of the observation contract unpacks `flat`: the B0
+    baseline and all three of Block G's architectures (`docs/MODELS.md`). A
+    second, hand-rolled unpacking is how the max-N padding stops being identical
+    across rungs, so the inverse lives next to the packing and is pinned here.
+    """
+    env = BatchedSwarmEnv(EnvConfig(num_envs=3, num_drones=5, seed=0, compile_occlusion=False))
+    obs = env.reset()
+    got = core.unpack_flat(obs["flat"])
+
+    n_real = env.cfg.num_drones - 1
+    torch.testing.assert_close(got["ego"], obs["ego"])
+    torch.testing.assert_close(got["neighbour"][:, :, :n_real], obs["neighbour"])
+    torch.testing.assert_close(got["edge"][:, :, :n_real], obs["edge"])
+    # Padding is zero and flagged invalid, so an off-N model cannot read noise.
+    assert torch.count_nonzero(got["neighbour"][:, :, n_real:]) == 0
+    assert torch.count_nonzero(got["edge"][:, :, n_real:]) == 0
+    torch.testing.assert_close(
+        got["valid"][:, :, :n_real], torch.ones_like(got["valid"][:, :, :n_real])
+    )
+    assert torch.count_nonzero(got["valid"][:, :, n_real:]) == 0
+
+
+def test_neighbour_index_table_matches_the_packing_order():
+    """Slot k of drone i holds drone k if k < i else k+1.
+
+    A policy reconstructs this from N alone -- it is part of the contract, not
+    env state -- so if the env ever reorders neighbours this must fail loudly.
+    """
+    n = 5
+    table = core.neighbour_index_table(n)
+    assert table.shape == (n, n - 1)
+    for i in range(n):
+        expected = [k for k in range(n) if k != i]
+        assert table[i].tolist() == expected
+    torch.testing.assert_close(
+        table,
+        BatchedSwarmEnv(
+            EnvConfig(num_envs=1, num_drones=n, seed=0, compile_occlusion=False)
+        ).nb_idx,
+    )

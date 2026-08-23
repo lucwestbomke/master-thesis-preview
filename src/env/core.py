@@ -71,6 +71,10 @@ MCV_Z_M = 2.0
 DT_S = 0.4
 EPISODE_STEPS = 600
 DRONE_DASH_MS = 25.0
+# Cruise is a scenario parameter (AGENTS.md), not an env constraint: `step()`
+# enforces only the dash ceiling. It lives here so policies and the sizing
+# scripts read one number rather than three copies of it.
+DRONE_CRUISE_MS = 20.0
 MAX_ACCEL_MS2 = 10.0
 SENSOR_RANGE_M = 830.0  # non-binding ceiling; 99.8 % of sightlines are shorter
 SPAWN_RING_M = 5.0
@@ -116,6 +120,49 @@ NOISE_REF_DBM = -97.0  # thermal floor at 10 MHz / 7 dB NF
 NOISE_SCALE_DB = 30.0
 LINK_TIMEOUT_SCALE = 50.0
 SOFT_SEE_TAU_M = 15.0  # matches RewardWeights.tau_clearance_m
+
+
+def unpack_flat(flat: Tensor) -> dict[str, Tensor]:
+    """Inverse of `BatchedSwarmEnv._pack`. `(B, N, 108)` -> the structured views.
+
+    Lives here, next to the packing it inverts, because everything that consumes
+    `flat` has to agree on the layout: the B0 baseline (`src/baselines/b0.py`)
+    and all three of Block G's architectures, which `docs/MODELS.md` requires to
+    consume `flat` and unpack it so the max-N padding is identical across rungs
+    *by construction* rather than by discipline. A second, hand-rolled unpacking
+    somewhere else is how that guarantee is lost.
+
+    Returns `ego (B,N,24)`, `neighbour (B,N,7,9)`, `edge (B,N,7,2)` and
+    `valid (B,N,7)` -- the padding mask, 1.0 for real neighbours. The structured
+    keys the env returns alongside `flat` are the *unpadded* `(B,N,N-1,·)`
+    versions; these are always at `N_MAX - 1 = 7`.
+    """
+    k = N_MAX - 1
+    a = EGO_DIM
+    b = a + k * NEIGHBOUR_DIM
+    c = b + k * EDGE_DIM
+    return {
+        "ego": flat[..., :a],
+        "neighbour": flat[..., a:b].unflatten(-1, (k, NEIGHBOUR_DIM)),
+        "edge": flat[..., b:c].unflatten(-1, (k, EDGE_DIM)),
+        "valid": flat[..., c:],
+    }
+
+
+def neighbour_index_table(num_drones: int, device: torch.device | str = "cpu") -> Tensor:
+    """`(N, N-1)` global index of each neighbour slot, matching `_pack` order.
+
+    Slot `k` of drone `i` holds drone `k` if `k < i`, else `k + 1`. Part of the
+    observation contract (`docs/BLOCK_D.md`: "neighbour ordering is a
+    precomputed index table, fixed for the run"), so a policy may reconstruct it
+    from `N` alone -- it is not env state.
+    """
+    eye = torch.eye(num_drones, dtype=torch.bool, device=device)
+    return (
+        torch.arange(num_drones, device=device)
+        .repeat(num_drones, 1)[~eye]
+        .view(num_drones, max(num_drones - 1, 0))
+    )
 
 
 @dataclass(frozen=True)
@@ -602,6 +649,8 @@ class BatchedSwarmEnv:
         `docs/MODELS.md` needs max-N padding so the MLP rung can be evaluated at
         N in {3, 8} at all. Every architecture consumes this and unpacks it, so
         the padding is identical across rungs by construction.
+
+        `unpack_flat` (module level) is the inverse and is what they unpack with.
         """
         b, n, k = ego.shape[0], self.cfg.num_drones, N_MAX - 1
         real = self.cfg.num_drones - 1
@@ -706,6 +755,15 @@ class BatchedSwarmEnv:
             "on_path": aux["on_path"],
             "on_edge": aux["on_edge"],
             "sees_any": new_snap.observed,
+            # Per-drone sighting and the raw link matrix. Block E needs both:
+            # `sees_hvt` is the observer identity RQ3's handoff metrics are built
+            # from, and `capacity_mbps` lets an evaluator re-run the routing DP
+            # under a different `reuse_limit` without re-running the physics --
+            # which is how the rate-division counterfactual in docs/BLOCK_E.md
+            # is measured. Both are already computed; this only stops them being
+            # thrown away.
+            "sees_hvt": aux["sees_hvt"],
+            "capacity_mbps": aux["capacity_mbps"],
             "altitude_m": self.drone_pos[..., 2],
             "battery": self.battery,
         }
