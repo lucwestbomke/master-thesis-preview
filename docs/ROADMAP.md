@@ -91,7 +91,7 @@ was measured and decided.
 | **C** ✅ | batched segment-vs-**oriented**-box occlusion, 2.5D | RQ1 (the F1 rung *is* occlusion) | matches a slow shapely reference on random geometry ✅ | too slow → blows D's throughput gate. Fusion via `torch.compile` is what makes it viable |
 | **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** (transitions, not batched calls) and **≤3 h per 10 M-step run end-to-end** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** ✅ | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
-| **F** | F0–F4 as config flags on one env | **RQ1 directly** | all five run; `R` calibrated under F4 | uncalibrated `R` → RQ1 comparison is meaningless |
+| **F** ⬅️ | F0–F4 as config flags on one env — [`BLOCK_F.md`](BLOCK_F.md) | **RQ1 directly** | all five run; `R` calibrated under F4; **F4 reproduces today's env exactly** | uncalibrated `R` → RQ1 comparison is meaningless. Also: a fidelity flag that gates the *sensor* or the *diagnostics* rather than the channel → primary result uninterpretable |
 | **G** | MAPPO + curriculum | everything | one toy run beats random | nothing learns → the usual place projects stall |
 | **H** | offline Sionna agreement plot | methodology credibility | plot exists | — (optional, cut freely) |
 
@@ -134,7 +134,8 @@ C ████████████████████  done   occlusion
 D ██████████████████░░  built  env core + adapter + skrl seam; gate met 3170x
                               (CUDA re-run of the full env still pending)
 E ████████████████████  done   B0 = 57.2 %; renderer; rate target 5 -> 15 Mbps
-F ░░░░░░░░░░░░░░░░░░░░  next   F3->F4 is a LARGE effect (+26.5 pp), not a null
+F ░░░░░░░░░░░░░░░░░░░░  next   spec written: docs/BLOCK_F.md
+                              F3->F4 is a LARGE effect (+26.5 pp), not a null
 G ░░░░░░░░░░░░░░░░░░░░         ← the usual place projects of this shape stall
 H ░░░░░░░░░░░░░░░░░░░░
 ```

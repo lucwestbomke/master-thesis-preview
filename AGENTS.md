@@ -29,7 +29,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **C** | Occlusion: batched torch segment-vs-**oriented**-box (slab method) | ✅ **done**, 29 tests; `torch.compile` required |
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
-| F | Fidelity levels F0–F4 as config flags | ⬅️ **next** |
+| F | Fidelity levels F0–F4 as config flags | ⬅️ **next** — spec written, [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
 | G | MAPPO integration + curriculum | not started |
 | H | Sionna offline validation of the closed-form channel | not started |
 
@@ -41,7 +41,8 @@ Block B is done; [`docs/BLOCK_B.md`](docs/BLOCK_B.md) records what was measured
 and decided, and is the reference for the artefact's contents. Block C is
 specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_D.md`](docs/BLOCK_D.md), Block E in
-[`docs/BLOCK_E.md`](docs/BLOCK_E.md). Why each block exists, what it gates and
+[`docs/BLOCK_E.md`](docs/BLOCK_E.md), Block F in
+[`docs/BLOCK_F.md`](docs/BLOCK_F.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ⚠️ **Block E changed a settled parameter and several downstream expectations.**
