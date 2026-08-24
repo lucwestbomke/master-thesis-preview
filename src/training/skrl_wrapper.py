@@ -101,6 +101,24 @@ class Float32RunningStandardScaler(RunningStandardScaler):
         self.to(self.device)
 
 
+def _require_device(device: torch.device | str | None) -> None:
+    """The value scaler is a module with buffers, so it lands on a device.
+
+    Left to skrl it resolves `None` to the *global default* device -- which on a
+    GPU box is `cuda` even when the env and the models are on CPU, and the
+    mismatch only surfaces at the first inverse transform, several hundred lines
+    from the cause. Found the first time the suite ran on a CUDA machine
+    (2026-08-24): `test_mappo_runs_against_the_batched_core` builds a CPU env and
+    the scaler silently landed on the GPU.
+    """
+    if device is None:
+        raise ValueError(
+            "pass device= to mappo_cfg/ppo_cfg when scale_values is on: the value "
+            "preprocessor holds buffers, and skrl resolves None to the global "
+            "default device, which is cuda on a GPU box even for a CPU env"
+        )
+
+
 def value_scaler_for(device: torch.device | str | None) -> type[RunningStandardScaler]:
     return (
         Float32RunningStandardScaler
@@ -129,6 +147,7 @@ def mappo_cfg(
 
     kwargs: dict[str, Any] = dict(MAPPO_OVERRIDES)
     if scale_values:
+        _require_device(device)
         kwargs["value_preprocessor"] = value_scaler_for(device)
         kwargs["value_preprocessor_kwargs"] = {
             uid: {"size": 1, "device": device} for uid in possible_agents
@@ -159,6 +178,7 @@ def ppo_cfg(device: torch.device | str | None = None, scale_values: bool = True,
 
     kwargs: dict[str, Any] = dict(MAPPO_OVERRIDES)
     if scale_values:
+        _require_device(device)
         kwargs["value_preprocessor"] = value_scaler_for(device)
         kwargs["value_preprocessor_kwargs"] = {"size": 1, "device": device}
     kwargs.update(overrides)

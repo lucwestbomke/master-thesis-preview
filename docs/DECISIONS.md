@@ -861,6 +861,31 @@ Provisional and on the wrong device — MPS, `num_envs = 256`, learner attached:
 **20,519 env-steps/s → 0.14 h per 10 M-step run** against a ≤3 h target. A laptop
 lower bound settles nothing, but the budget risk is not currently visible.
 
+### Block G: the golden trace is architecture-specific, not just device-specific
+
+`golden.FORCED_CFG` pins `device="cpu"` precisely so the frozen trace is not at
+the mercy of a device's RNG stream. **That controls the device and not the
+instruction set**, and float32 is not associative across instruction sets.
+
+Measured 2026-08-24, the first time the suite ran on x86-64: identical commit,
+identical seeds, `device="cpu"` on both machines, and the traces diverge —
+`reset` (180 steps) by **1.4e-6**, `offn_eval` by **3.0e-6**, `design` (300
+steps) by **2.4e-3**. ULP-level at the start, amplified by a closed loop in which
+the recorded action depends on the state it just produced. The same commit passes
+**exactly** on arm64, which is what rules out an environment change.
+
+**Consequence, and it extends an existing rule.** `DECISIONS.md` already records
+that *a device is part of a measurement's provenance*. So is the **architecture**.
+`test_golden.py` now asserts bitwise equality only on `arm64` (where the artefact
+was captured) and runs a weaker aggregate check elsewhere: mission-capable,
+observed and hop-count *rates* within a tolerance far tighter than any effect
+Block D or E reports. Last-bit divergence reshuffles which individual steps are
+capable; it does not move the rate.
+
+⛔ **Do not re-capture on x86 to make the test green.** That discards the only
+record of the pre-Block-F environment, and the divergence is a real property of
+float arithmetic rather than a defect. Run CI on arm64.
+
 ### `SAGEConv` for the GNN rung
 ☠️ **Never.** It cannot ingest edge features at all, so it would silently collapse
 the GNN rung into the DeepSets rung and leave RQ2 measuring nothing — and it is

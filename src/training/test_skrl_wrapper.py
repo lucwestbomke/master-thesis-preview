@@ -67,7 +67,9 @@ def build(num_envs=4, num_drones=3, rollouts=8):
         }
         memories[uid] = RandomMemory(memory_size=rollouts, num_envs=env.num_envs, device=dev)
 
-    cfg = mappo_cfg(env.possible_agents, rollouts=rollouts, learning_epochs=1, mini_batches=1)
+    cfg = mappo_cfg(
+        env.possible_agents, device=dev, rollouts=rollouts, learning_epochs=1, mini_batches=1
+    )
     agent = MAPPO(
         possible_agents=env.possible_agents,
         models=models,
@@ -195,7 +197,7 @@ def test_value_preprocessor_is_wired():
         assert agent.cfg.value_preprocessor[uid] is RunningStandardScaler
         assert agent._value_preprocessor[uid] is not agent._empty_preprocessor
     # and it must be defeatable for the ablation, without touching the others
-    off = mappo_cfg(env.possible_agents, scale_values=False)
+    off = mappo_cfg(env.possible_agents, device=env.device, scale_values=False)
     assert off.value_preprocessor is None
     assert off.time_limit_bootstrap is True and off.discount_factor == GAMMA
 

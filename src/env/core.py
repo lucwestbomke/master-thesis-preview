@@ -479,6 +479,10 @@ class BatchedSwarmEnv:
         w = torch.tensor(cfg.stage_weights, device=dev, dtype=torch.float32)
         self.stage_cdf = (w / w.sum()).cumsum(0)
 
+        # Position limits, as device tensors built once. See `_advance_drones`.
+        self.pos_lo = torch.tensor([-BOX_HALF_M, -BOX_HALF_M, ALT_MIN_M], device=dev)
+        self.pos_hi = torch.tensor([BOX_HALF_M, BOX_HALF_M, ALT_MAX_M], device=dev)
+
         self.drone_pos = torch.zeros(b, n, 3, device=dev)
         self.drone_vel = torch.zeros(b, n, 3, device=dev)
         self.last_accel = torch.zeros(b, n, device=dev)
@@ -631,9 +635,12 @@ class BatchedSwarmEnv:
         vel = vel * (DRONE_DASH_MS / speed.clamp_min(1e-6)).clamp(max=1.0)
 
         want = self.drone_pos + vel * self.cfg.dt_s
-        lo = torch.tensor([-BOX_HALF_M, -BOX_HALF_M, ALT_MIN_M], device=self.device)
-        hi = torch.tensor([BOX_HALF_M, BOX_HALF_M, ALT_MAX_M], device=self.device)
-        pos = torch.maximum(torch.minimum(want, hi), lo)
+        # ⚠️ Built once in `__init__`, NOT here. `torch.tensor([...])` from a
+        # Python list copies host memory to the device and forces a
+        # synchronisation -- a full pipeline stall on every step, invisible in a
+        # diff. Caught by `test_step_never_syncs_to_the_host`, which is CUDA-only
+        # and so had never executed until the first GPU session (2026-08-24).
+        pos = torch.maximum(torch.minimum(want, self.pos_hi), self.pos_lo)
 
         # Zero the component that hit a limit. Without this the drone presses
         # into the wall and the energy term charges for motion that never

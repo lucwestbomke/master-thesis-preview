@@ -122,6 +122,20 @@ Read [`docs/BLOCK_E.md`](docs/BLOCK_E.md) before planning an experiment:
    link quality rather than sensor occlusion. E3a's ablation now zeroes the
    `on_path` bit and edge features, not `sees_hvt`.
 
+✅ **G1b measured on CUDA (2026-08-24): a 10 M-step run costs 2.2 minutes**
+end-to-end with the learner attached (75,252 env-steps/s, RTX 5090, `num_envs`
+1024) against a ≤3 h target. The 45-run matrix is **~2 GPU-hours, not 120**.
+Compute is not a constraint — [`docs/BLOCK_G.md`](docs/BLOCK_G.md). GPU
+utilisation was 33 % at 3 GiB of 32 GiB, so `num_envs` has room to grow on
+learning grounds.
+
+⚠️ **The frozen trace is `arm64`-specific.** `golden.py` pins `device="cpu"`, but
+float32 is not associative across instruction sets: the same commit diverges by
+2.4e-3 over 300 steps on x86-64 and passes exactly on Apple silicon.
+`test_golden.py` asserts bitwise equality only on arm64 and checks aggregate
+rates elsewhere. **Run the suite on arm64 before believing a golden failure** —
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
+
 ✅ **The throughput gate is met.** RTX 5090, 2026-08-12: compiled occlusion runs
 **3.17 M env-steps/s** at `num_envs = 1024` — ~3170× the gate — and occlusion is
 ~99 % of the step, so the env is not the bottleneck. `num_envs` is now chosen on

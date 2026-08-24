@@ -93,8 +93,11 @@ def stage_breakdown(
     pos, _vel, _accel = env._advance_drones(actions)
     hvt_pos, _ = env._advance_hvt(env.t + 1)
     pos_k = torch.cat([pos, env.mcv_pos.unsqueeze(1), hvt_pos.unsqueeze(1)], dim=1)
-    clearance = env._clearance(pos_k)
-    capacity, _ = env._capacity(pos_k, clearance)
+    # Block F split this: `_clearance` returns (true, channel) -- the sensor and
+    # the diagnostics read `true` at every rung, only `_capacity` reads `channel`.
+    # Unpacking it is what `--breakdown` was missing; it has been broken since.
+    _true_clr, channel_clr = env._clearance(pos_k)
+    capacity, _ = env._capacity(pos_k, channel_clr)
     sees = torch.zeros(cfg.num_envs, cfg.num_drones, dtype=torch.bool, device=env.device)
     source = torch.cat([sees, torch.zeros_like(sees[:, :1])], dim=1)
     snap, aux = env._evaluate()
@@ -104,7 +107,7 @@ def stage_breakdown(
         ("kinematics", bench(lambda: env._advance_drones(actions), dev)),
         ("hvt route", bench(lambda: env._advance_hvt(env.t + 1), dev)),
         ("occlusion", bench(lambda: env._clearance(pos_k), dev)),
-        ("channel", bench(lambda: env._capacity(pos_k, clearance), dev)),
+        ("channel", bench(lambda: env._capacity(pos_k, channel_clr), dev)),
         (
             "routing DP",
             bench(

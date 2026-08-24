@@ -100,6 +100,60 @@ density changes. Pinned by `src/models/test_actor.py`.
 (`EnvConfig.training_extras`) and skrl's own loss/σ tracking are what made this
 findable at all. The aggregate return said only "flat, then falling".
 
+### ✅ G1a / G1b — measured on CUDA, and the budget assumption was wildly conservative
+
+RTX 5090, torch 2.13.0+cu130, 2026-08-24. `scripts/cuda_session.sh` reproduces
+the whole session.
+
+| | measured | target |
+|---|---|---|
+| **G1b: 10 M steps end-to-end, learner attached** | **2.2 min (75,252 env-steps/s)** | **≤3 h** |
+| G1a: env only, `num_envs = 256` | 37,083 env-steps/s | ≥1000 |
+| rung spread F0–F4 | **1.09x** | no rung cheaper |
+
+**The gate is met by 75x.** THESIS_PLAN §3 budgets 45 runs at ~2.8 h each ≈ 120
+GPU-hours; the measured cost is **~2 GPU-hours for the entire matrix**. Compute
+is not a constraint on this project and never was — which means the equal-budget
+hyperparameter search `MODELS.md` requires is affordable, and so is any number of
+seeds. ⚠️ Update THESIS_PLAN's budget rather than quoting 120 GPU-hours again.
+
+**Utilisation was 33 % at 3 GiB of 32 GiB**, so `num_envs = 1024` leaves most of
+the card idle. Two consequences: `num_envs` can rise a long way on *learning*
+grounds, and several seeds fit concurrently on one GPU.
+
+Block F's rung-independence result survives at CUDA scale: **1.09x** spread
+across F0–F4 (1.06x on MPS), so no rung gets more samples per GPU-hour.
+
+**The CUDA baseline reproduces the MPS one**, which is the useful part — the
+diagnosis transfers to real hardware:
+
+| | CUDA (3 seeds) | MPS (3 seeds) |
+|---|---|---|
+| GNN + floor | 38.1 % [3.5] | 37.6 % [1.7] |
+| B0 | 57.5 % [1.4] | 58.0 % [2.2] |
+| observer tenure, GNN vs B0 | 41.5 vs **270.3** | 35.6 vs 264.6 |
+
+### ☠️ What the first CUDA run found — three bugs, one per never-executed test
+
+**1. A host synchronisation on every step.** `core._advance_drones` built its
+position limits with `torch.tensor([...], device=...)` from a Python list *inside
+the step*, which copies host memory and stalls the pipeline every tick. This
+violates `AGENTS.md`'s device rule and had been there since Block D. It was
+caught by `test_step_never_syncs_to_the_host`, which is CUDA-gated and had
+**never executed in the project's history** — the test worked the first time it
+ran. Fixed by hoisting the two tensors into `__init__`; the golden trace still
+passes exactly on arm64, so no number moved.
+
+**2. The value preprocessor landed on the wrong device.** `mappo_cfg(device=None)`
+let skrl resolve the scaler's device to the *global default*, which is `cuda` on
+a GPU box even when the env and models are on CPU. `mappo_cfg`/`ppo_cfg` now
+refuse `device=None` when scaling is on.
+
+**3. `bench_env.py --breakdown` had been broken since Block F** — `_clearance`
+returns `(true, channel)` now and the breakdown still passed the tuple to
+`_capacity`. It aborted step 2 of the session, which is why only the 256-env row
+of G1a exists. Re-run `--envs 1024 4096` to complete the table.
+
 ### Three decisions the spec did not settle
 
 **1. G1 is split into G1a and G1b, because the spec's build order is circular.**
