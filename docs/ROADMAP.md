@@ -40,7 +40,7 @@ simulator must include.
 | Enough samples to make 45 runs affordable | batched env at ≥1000 steps/s | **D** |
 | Proof MARL earns its keep | a scripted geometric baseline (B0) | **E** ✅ |
 | The independent variable itself | F0–F4 as config flags on one env | **F** ✅ |
-| Policies to compare | MAPPO + a curriculum that actually learns | **G** |
+| Policies to compare | MAPPO + a curriculum that actually learns | **G** 🔨 |
 | A channel model a telecoms examiner accepts | offline Sionna agreement plot | **H** |
 
 ```mermaid
@@ -71,7 +71,7 @@ flowchart TD
     A -.-> H
 ```
 
-**Critical path: B → C → D → F → G.** Only **G** is left on it. Everything else hangs off it.
+**Critical path: B → C → D → F → G.** Only **G** is left on it, and it is under way. Everything else hangs off it.
 **E** can run alongside D once the env steps. **H** is fully parallel and touches
 only the methodology chapter.
 
@@ -92,7 +92,7 @@ was measured and decided.
 | **D** ⬅️ | batched env core + PettingZoo adapter | everything | **≥1000 env-steps/s on GPU** (transitions, not batched calls) and **≤3 h per 10 M-step run end-to-end** | below gate → 45 runs unaffordable, matrix must shrink |
 | **E** ✅ | renderer + B0 scripted heuristic | sanity floor for every RQ; all figures and videos | B0 completes an episode on video | no B0 → cannot answer "is MARL needed at all?" |
 | **F** ✅ | F0–F4 as config flags on one env — [`BLOCK_F.md`](BLOCK_F.md) | **RQ1 directly** | ✅ all five run at 1024 envs; `R` = **524 m** measured and cross-checked; **F4 reproduces the pre-Block-F env element for element** against a committed trace | uncalibrated `R` → RQ1 comparison is meaningless. Also: a fidelity flag that gates the *sensor* or the *diagnostics* rather than the channel → primary result uninterpretable |
-| **G** ⬅️ | MAPPO + curriculum — [`BLOCK_G.md`](BLOCK_G.md) | everything | one toy run beats random, then a full run beats **B0 = 57.2 %** | nothing learns → the usual place projects stall |
+| **G** 🔨 | MAPPO + curriculum — [`BLOCK_G.md`](BLOCK_G.md) | everything | ✅ toy run beats random (**74.8 % [12.7] vs 35.1 %**, stage 1, 5 training seeds); a full run beating **B0 = 57.2 %** still ahead | nothing learns → the usual place projects stall. It nearly did: `clip_actions=True` inverted learning outright |
 | **H** | offline Sionna agreement plot | methodology credibility | plot exists | — (optional, cut freely) |
 
 **Hand to an agent:** B, C, E — well-specified and testable.
@@ -136,8 +136,10 @@ D ██████████████████░░  built  env core 
 E ████████████████████  done   B0 = 57.2 %; renderer; rate target 5 -> 15 Mbps
 F ████████████████████  done   ladder F0-F4 on one env; R = 524 m measured;
                               F4 == pre-Block-F env, element for element
-G ░░░░░░░░░░░░░░░░░░░░  next   spec written: docs/BLOCK_G.md
-                              ← the usual place projects of this shape stall
+G ████████░░░░░░░░░░░░  doing  MAPPO + curriculum + 3 architectures built;
+                              GATE MET: 74.8 % [12.7] vs random 35.1 %, 5 seeds.
+                              G1a/G1b (CUDA wall-clock) and the full-mission
+                              run against B0 = 57.2 % still ahead
 H ░░░░░░░░░░░░░░░░░░░░
 ```
 

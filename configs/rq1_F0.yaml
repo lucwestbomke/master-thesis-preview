@@ -1,0 +1,3 @@
+# RQ1, rung F0. Trained under F0, evaluated under F4 like every other rung.
+extends: base.yaml
+fidelity: F0

@@ -265,3 +265,45 @@ def weight_constraints_satisfied(
         # zero (all of early training) yet stay negligible over a full episode.
         "potential_guides_without_dominating": 3.0 < w.potential_scale < 50.0,
     }
+
+
+def reward_terms(
+    snap: Snapshot,
+    next_snap: Snapshot,
+    w: RewardWeights | None = None,
+    gamma: float = 0.999,
+    next_is_terminal: torch.Tensor | None = None,
+    craft: Rotorcraft = DEFAULT_AIRFRAME,
+) -> dict[str, torch.Tensor]:
+    """The same reward, decomposed. `(B, N)` per term; they sum to `reward(...)`.
+
+    Diagnostic only -- nothing consumes this to compute anything. It exists
+    because `docs/REWARD.md` requires every term logged separately: the total is
+    nearly useless for diagnosis, and one term carrying 95 % of the magnitude is
+    the signature of a scaling error that is invisible in the aggregate. Block G
+    is where a flat return curve has to be attributed to a term, so this is the
+    instrumentation that has to exist before any tuning starts.
+
+    Broadcast to `(B, N)` rather than left as `(B,)` for the team terms, so a
+    caller can stack them and check the sum against `reward` element-wise --
+    which `test_reward.py` does, and which is what stops this drifting away from
+    the function it claims to decompose.
+    """
+    w = w or DEFAULT_WEIGHTS
+    n = snap.n_agents
+    capable = mission_capable(snap).to(snap.e2e_capacity_mbps.dtype)
+    idle = (~snap.observed).to(capable.dtype)
+    var_b = snap.battery.var(dim=-1, unbiased=False)
+    power = total_power_w(snap.speed_ms, snap.accel_ms2, craft)
+
+    def team(x: torch.Tensor) -> torch.Tensor:
+        return x.unsqueeze(-1).expand(-1, n)
+
+    return {
+        "mission": team(w.mission * capable),
+        "idle": team(-w.idle * idle),
+        "battery_variance": team(-w.battery_variance * var_b),
+        "shaping": team(shaping(snap, next_snap, w, gamma, next_is_terminal)),
+        "energy": -w.energy * power / hover_reference_power_w(craft),
+        "effort": -w.effort * (snap.accel_ms2 / w.max_accel_ms2) ** 2,
+    }

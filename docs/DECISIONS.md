@@ -746,6 +746,121 @@ missing column:
 open question. Do **not** write RQ2 as if the architecture ladder had been tested
 across cities.
 
+### Block G: `GaussianMixin(clip_actions=True)` — ☠️ it inverts learning
+
+Not a design proposal: a **library default that silently destroys the result**,
+recorded here because it cost a day and nothing about it is visible in a return
+curve.
+
+skrl clamps the sampled action to the action space and then evaluates its
+log-probability under the *unclamped* Normal, so every tail draw is recorded as
+though it had landed exactly on ±1. The PPO ratio is then computed against a
+density that does not describe how the actions were actually generated, the
+policy is pushed to the corners of the action box, and the action standard
+deviation rises **with `entropy_loss_scale = 0`** — which is impossible under a
+correct gradient, and is the tell.
+
+Measured: under a reward whose only non-zero weight was `w_mission`, so that the
+return **is** the headline metric, mission-capable fell from 30 % to 4.6 % over
+600 k steps. Learning rate, KL-adaptive scheduling and rollout length changed
+only the speed of the collapse.
+
+**`clip_actions=False`.** `core._advance_drones` already opens with
+`actions.clamp(-1.0, 1.0)`, so the bound is enforced either way and only the
+density changes. With the fix the same configuration reaches **74.8 % [12.7] against
+random's 35.1 %** on stage 1 over five training seeds. Pinned by `src/models/test_actor.py`, which also
+asserts the recorded log-probability is the one belonging to the action returned.
+
+**The method is the reusable part**, and it generalises to the next time
+something in Block G does not learn: build a reward whose optimum you know
+(`-w_effort·‖a‖²`, optimum `a = 0`) and check PPO improves *it*. That cleared the
+wrapper, the flattening, the bootstrap, GAE and the optimiser in one run, and
+left the action distribution as the only suspect.
+
+### Block G: the swarm trains as ONE parameter-shared agent, not `N` skrl agents
+
+`SwarmMultiAgentWrapper` (Block D) keys every tensor per drone. That is the
+natural reading of skrl's multi-agent API and it stays, because the observation
+contract smoke tests are written against it — but it cannot be what a reported
+run uses, for two structural reasons:
+
+1. **RQ2's zero-shot transfer needs one policy.** The matrix trains at `N = 5`
+   and evaluates at `N ∈ {3,5,8}`. Five per-drone policies cannot be evaluated at
+   eight drones at all, so the transfer columns would not exist.
+2. **Homogeneity is a claim this project makes.** `REWARD.md` requires the reward
+   not to depend on agent index or "roles emerge rather than being assigned"
+   collapses. A distinct network per drone breaks it from the other side.
+
+The obvious route is a trap: handing skrl the *same* `Model` object under five
+agent ids builds **five Adam optimizers over the same parameters** and runs five
+sequential PPO updates per rollout, four of them computing ratios against
+log-probabilities collected under a policy that has already moved.
+
+`SharedPolicyWrapper` collapses the drones into the batch dimension — one
+optimizer, one update, correct ratios. This is MAPPO **as published** (Yu et al.,
+2022), not a weakened form of it: decentralized agent-local actors, one
+centralized critic on the shared global state, parameters shared across
+homogeneous agents. CTDE is unaffected; the actor still reads `observations` and
+never `states`.
+
+### Block G: one message-passing layer for the actor, not the two MODELS.md allows
+
+`MODELS.md` argues depth from graph diameter over a graph of `N` drone nodes and
+sets the ceiling at two layers. **The actor never holds that graph.** Its
+observation is `(B, 108)` — its own ego block plus 7 neighbour slots — which is a
+*star* centred on itself.
+
+A second layer over the true swarm graph would give drone `i` access to `j`'s
+aggregate of `k`: information `i` does not possess and could obtain only by
+exchanging embeddings with its neighbours. That hands the GNN rung **strictly
+more information** than the MLP and DeepSets rungs get, so RQ2's contrast would
+confound architecture with information — the exact confound the zeroed-`e_ij`
+design exists to rule out. Extra layers over the *local star* add no information
+at all, only depth.
+
+**One message-passing layer, with depth in the message and update MLPs.**
+MODELS.md's own diameter-1 argument already says one layer reaches every drone;
+the second layer it allows for is *unavailable* to an agent-local actor, not
+merely unnecessary. Two-layer-with-communication belongs in Chapter 7, where it
+is a different claim — about the control plane, not about relational structure.
+
+### Block G: `time_limit_bootstrap=True` was bootstrapping the wrong state
+
+A bug in the training seam, found by reading skrl 2.1.0's `record_transition`
+rather than by a failing test — which is the point of recording it.
+
+skrl acts on the flag by computing `gamma * V(next_observations, next_states)`
+and adding it to the reward at truncation. With `auto_reset=True` the tensors
+`step()` returns are already the **next episode's opening**, so the learner would
+have valued an unrelated state at every truncation, at gamma = 0.997 on returns
+of order 300. `time_limit_bootstrap=True` would have looked correct in the config
+and in Block D's smoke test — which asserts the *flag*, not the *state* — while
+doing the opposite of what it is set for.
+
+`extras["final_observation"]` already existed; the critic's `final_state` was
+being computed inside `step()` and thrown away. Both are now emitted under
+`EnvConfig.training_extras`, **off by default**, so the golden trace's output
+contract is untouched and no re-capture was needed. The training loop passes them
+to `record_transition` instead of the step return, and
+`SharedPolicyWrapper.final_states()` refuses with a message naming the flag
+rather than silently handing back the wrong tensor.
+
+### Block G: G1 split into G1a and G1b — the spec's build order was circular
+
+`BLOCK_G.md` puts G1 first and asks for "wall-clock for a 10 M-step run
+end-to-end **including the learner**" before building anything on top. There is
+no learner until G2/G3, and `bench_env.py` measures the env alone — so the
+headline number G1 exists to produce cannot be measured in G1.
+
+**G1a** is Block D's pending env-only CUDA re-run and has no dependencies.
+**G1b** is the end-to-end wall-clock and runs in the same GPU session, after the
+trainer exists. The risk argument the ordering protects is unaffected: G1b is
+still the first thing that happens on real hardware.
+
+Provisional and on the wrong device — MPS, `num_envs = 256`, learner attached:
+**20,519 env-steps/s → 0.14 h per 10 M-step run** against a ≤3 h target. A laptop
+lower bound settles nothing, but the budget risk is not currently visible.
+
 ### `SAGEConv` for the GNN rung
 ☠️ **Never.** It cannot ingest edge features at all, so it would silently collapse
 the GNN rung into the DeepSets rung and leave RQ2 measuring nothing — and it is
@@ -764,7 +879,8 @@ the layer people reach for by default.
 | MCV spawn diversity — **investigated, no action** | see below |
 | ~~Why one route lingered 333 steps on a ~240 m bridge~~ | ✅ **closed in Block D.** Measured over the whole bank (`measure_envelope.py --only route`): longest near-stationary run is **1 step**, p90 1, no route stalls >50 steps, slowest route still averages 5.77 m/s. `grow_outward` does not stall — the 333 steps were the bridge decks, and those are gone |
 | ~~F3's jammer switch must NOT be `jammer_on`~~ | ✅ **CLOSED in Block F.** `channel_jammer` is derived from the `fidelity` enum and multiplied in *alongside* the curriculum tensor, never instead of it. `test_fidelity.py` asserts the curriculum's `jammer_on` / `speed_scale` / `episode_len` / `route_id` draws are bit-identical across all five rungs at a fixed seed, and that jam power is identically zero below F3 and strictly positive at or above it |
-| Value preprocessing for the critic | **Block G.** Pair `core.GAMMA = 0.997` with skrl's `value_preprocessor` (`RunningStandardScaler`) — returns are of order 300 and the critic has to fit that scale. Not wired in Block D because it needs the state width and belongs with the training config, not the env seam |
+| ~~Value preprocessing for the critic~~ | ✅ **CLOSED in Block G.** `value_preprocessor=RunningStandardScaler` is applied by `training.skrl_wrapper.mappo_cfg()`, `size=1` (it normalises the value *output*; the critic's global state is already unit-scaled by `core._critic_state`, so no `state_preprocessor` is set). One wrinkle: skrl keeps the scaler's running moments in **float64**, which MPS cannot allocate, so `Float32RunningStandardScaler` is selected by device — CUDA keeps float64, because over a 10 M-step run the parallel-variance update adds `delta * count / total` with `total` near 1e8, where a float32 increment can vanish |
+| `tau_c`, `tau_l` and Phi's scale — the retune | **still Block G**, and now possible: a learner exists. Untouched so far, deliberately — the anti-learning bug had to be cleared first, or the retune would have been fitted to a broken gradient |
 | ~~Is the 3-hop regime under-exercised?~~ | ✅ **CLOSED in Block E — no.** The framing was wrong twice over. (1) Chains of **4 and 5 hops were never counted**, and `routing.py`'s divisor is `min(n, 3)`, so they are charged exactly like 3-hop ones — the regime that matters is ≥3 hops, not exactly 3. (2) The denominator included the 59 % of steps where *nobody is observing*, so no chain exists at all. Under B0 on the eval split, conditioned on a chain existing: **multi-hop 80.5 % overall and 95.6 % in the last third, with the divisor saturated at 3 on 54.2 % of late chain-steps.** Against the 4.2 % that caused the alarm that is an order of magnitude. No change to the box or the escalation — [`BLOCK_E.md`](BLOCK_E.md) §6 |
 | ~~Expect F3 → F4 to be a null~~ | ✅ **SUPERSEDED, twice.** The null was a 5 Mbps-era prediction; Block E re-measured it at 15 Mbps as **+26.5 pp**, and Block F reproduced it independently under the ladder at **−27.1 pp** (F3 83.1 % → F4 56.0 %). The divisor is the rung that makes the mission hard. **Do not carry the null prediction forward** — [`BLOCK_F.md`](BLOCK_F.md) |
 | ~~Mission success saturates at N=5 under F4~~ | ✅ **SUPERSEDED by the rate change.** The 93.2 %-with-7 pp-headroom figure is 5 Mbps-era. At 15 Mbps B0 reaches **57.2 %** against a 93.0 % sensor ceiling, so the headline metric has ~36 points of headroom and it is all relay geometry. The companion metrics named there (time-to-first-capable, 5th-percentile capacity, N = 3) remain worth reporting on their own merits |

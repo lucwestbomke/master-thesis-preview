@@ -17,6 +17,9 @@ venv/
 
 # Experiment outputs
 wandb/
+# Training runs: checkpoints + JSONL logs. Regenerate with src/training/train.py;
+# the numbers that matter live in docs/BLOCK_G.md.
+runs/
 # hydra run dirs
 outputs/
 runs/

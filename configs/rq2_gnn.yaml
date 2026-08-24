@@ -1,0 +1,5 @@
+# RQ2, architecture rung: gnn. Equal hyperparameter budget -- same search
+# space, same number of trials, same selection rule as the other two.
+extends: base.yaml
+fidelity: F4
+architecture: gnn

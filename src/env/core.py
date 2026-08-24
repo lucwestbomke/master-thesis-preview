@@ -39,6 +39,7 @@ Design decisions and the measurements behind them: `docs/BLOCK_D.md`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -56,6 +57,7 @@ from .reward import (
     Snapshot,
     mission_capable,
     reward,
+    reward_terms,
 )
 
 ARTEFACT = Path(__file__).resolve().parents[2] / "data" / "frankfurt_box.npz"
@@ -335,6 +337,27 @@ class EnvConfig:
     # produce an off-ladder condition.
     duplexing_override: int | None = None
 
+    # ⚠️ Widens the `extras` contract, so it is OFF by default and the default
+    # build is byte-identical to the one `test_golden.py` pins. Block G turns it
+    # on for training runs; nothing else should. Two additions, both diagnostic:
+    #
+    #   `final_state`  -- the critic's global state BEFORE auto-reset. The
+    #       companion to `final_observation`, and it is not optional for
+    #       correctness: skrl bootstraps truncation as `gamma * V(next_obs,
+    #       next_state)`, and with auto_reset the post-step return is a FRESH
+    #       episode's opening. Without this key the learner would bootstrap the
+    #       value of an unrelated state at every truncation -- silently, and at
+    #       gamma = 0.997 on returns of order 300.
+    #
+    #   `reward/<term>` -- the six reward terms, separately. docs/REWARD.md:
+    #       "Log every term separately. The total is nearly useless for
+    #       diagnosis; one term contributing 95 % of the magnitude is the
+    #       signature of a scaling error and is invisible in the aggregate."
+    #
+    # Neither feeds anything the env computes; both cost one extra pass over
+    # already-computed tensors, which is noise against occlusion.
+    training_extras: bool = False
+
     def __post_init__(self) -> None:
         if self.fidelity not in LADDER:
             raise ValueError(f"fidelity must be one of {sorted(LADDER)}, got {self.fidelity!r}")
@@ -476,6 +499,31 @@ class BatchedSwarmEnv:
     # ------------------------------------------------------------------ #
     # Episode setup
     # ------------------------------------------------------------------ #
+
+    def set_stage_weights(self, weights: Sequence[float]) -> None:
+        """Reweight which curriculum stages fresh episodes are drawn from.
+
+        The curriculum is the one thing that legitimately varies *during* a run
+        (docs/ENVIRONMENT.md: "Curriculum varies within one training run.
+        Fidelity varies between runs"), and `EnvConfig` is frozen, so the
+        callback needs a seam. This is it, and it is the whole seam: it touches
+        the sampling distribution over `STAGES` and nothing else.
+
+        Takes effect at the next auto-reset, per environment -- episodes already
+        in flight keep the stage they were drawn under, which is what makes the
+        transition smooth rather than a discontinuity mid-episode.
+
+        ⛔ Never reachable from `fidelity`. The schedule that drives this must be
+        a pure function of the training step and identical in every fidelity
+        condition, or easier rungs reach the final stage sooner and RQ1 is
+        confounded past repair -- `src/training/curriculum.py` and its test.
+        """
+        if len(weights) != len(STAGES):
+            raise ValueError(f"expected {len(STAGES)} stage weights, got {len(weights)}")
+        w = torch.tensor(tuple(weights), device=self.device, dtype=torch.float32)
+        if (w < 0).any() or float(w.sum()) <= 0.0:
+            raise ValueError(f"stage weights must be non-negative with a positive sum, got {w}")
+        self.stage_cdf = (w / w.sum()).cumsum(0)
 
     def _sample_episode(self, mask: Tensor) -> None:
         """Draw fresh episodes where `mask`, in place.
@@ -1022,6 +1070,20 @@ class BatchedSwarmEnv:
             "altitude_m": self.drone_pos[..., 2],
             "battery": self.battery,
         }
+
+        # Off by default: these widen the output contract, which `test_golden.py`
+        # pins deliberately. See `EnvConfig.training_extras`.
+        if cfg.training_extras:
+            extras["final_state"] = final_obs["state"]
+            for name, value in reward_terms(
+                self.snap,
+                new_snap,
+                self.weights,
+                cfg.gamma,
+                next_is_terminal=terminated,
+                craft=self.craft,
+            ).items():
+                extras[f"reward/{name}"] = value
 
         if not cfg.auto_reset:
             self.snap = new_snap

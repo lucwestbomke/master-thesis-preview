@@ -16,6 +16,7 @@ believe the world ends at 600 steps.
 
 from __future__ import annotations
 
+import pytest
 import torch
 from skrl.memories.torch import RandomMemory
 from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
@@ -181,3 +182,56 @@ def test_learner_and_env_discount_the_same_way():
     # post-expansion, which is the form MAPPO actually discounts with
     for uid in env.possible_agents:
         assert agent.cfg.discount_factor[uid] == env.core.cfg.gamma
+
+
+def test_value_preprocessor_is_wired():
+    """The third silent default (docs/BLOCK_G.md G3). Returns are of order 300;
+    an unnormalised critic target at that scale makes the value loss dwarf the
+    policy loss at a shared learning rate."""
+    from skrl.resources.preprocessors.torch import RunningStandardScaler
+
+    env, agent = build()
+    for uid in env.possible_agents:
+        assert agent.cfg.value_preprocessor[uid] is RunningStandardScaler
+        assert agent._value_preprocessor[uid] is not agent._empty_preprocessor
+    # and it must be defeatable for the ablation, without touching the others
+    off = mappo_cfg(env.possible_agents, scale_values=False)
+    assert off.value_preprocessor is None
+    assert off.time_limit_bootstrap is True and off.discount_factor == GAMMA
+
+
+def test_the_learner_bootstraps_the_state_the_episode_actually_ended_in():
+    """The bug this guards is invisible: `time_limit_bootstrap=True` is set,
+    correctly, and then bootstraps `V` of a FRESH episode's opening because
+    auto_reset has already moved the env on. `final_observations`/`final_states`
+    are what must be handed to `record_transition` instead."""
+    core = BatchedSwarmEnv(
+        EnvConfig(num_envs=4, num_drones=3, training_extras=True, **{**FAST, "no_buildings": True})
+    )
+    env = SwarmMultiAgentWrapper(core)
+    env.reset()
+    zero = {uid: torch.zeros(4, ACTION_DIM, device=env.device) for uid in env.agents}
+
+    saw_truncation = False
+    for _ in range(150):
+        nobs, _, _, trunc, _ = env.step(zero)
+        uid = env.agents[0]
+        if trunc[uid].any():
+            saw_truncation = True
+            assert not torch.equal(env.final_observations()[uid], nobs[uid])
+            assert not torch.equal(env.final_states()[uid], env.state()[uid])
+        else:
+            assert torch.equal(env.final_observations()[uid], nobs[uid])
+            assert torch.equal(env.final_states()[uid], env.state()[uid])
+    assert saw_truncation
+
+
+def test_final_states_says_why_when_the_env_is_not_emitting_them():
+    """Silent-by-default is the failure mode this whole seam exists to avoid, so
+    the missing-key path must name the flag rather than hand back the wrong
+    tensor."""
+    env = SwarmMultiAgentWrapper(BatchedSwarmEnv(EnvConfig(num_envs=2, num_drones=2, **FAST)))
+    env.reset()
+    env.step({uid: torch.zeros(2, ACTION_DIM, device=env.device) for uid in env.agents})
+    with pytest.raises(RuntimeError, match="training_extras"):
+        env.final_states()

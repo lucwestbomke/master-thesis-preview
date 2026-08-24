@@ -104,6 +104,10 @@ def pin_route(env: BatchedSwarmEnv, route_idx: int, cue_sigma_m: float = 150.0) 
     env.snap, _ = env._evaluate()
 
 
+#: Scripted policy names. Anything else `_make_policy` sees is a checkpoint path.
+POLICY_NAMES = ("random", "waypoint", "b0-geodesic", "b0", "b0-oracle")
+
+
 def fly(
     route_idx: int,
     policy: str = "b0",
@@ -175,9 +179,56 @@ def fly(
 
 
 def _make_policy(name: str, env: BatchedSwarmEnv, n: int):
-    """Any policy, one signature. Block G adds `checkpoint` here and nothing
-    else in the renderer changes."""
+    """Any policy, one signature.
+
+    Block G's addition: a **path to a checkpoint** is a policy name. The actor
+    is evaluated at its distribution's mean rather than sampled, so the figure
+    shows what the policy *does* and not what its exploration noise did on one
+    roll. Everything else in the renderer is unchanged, exactly as intended.
+    """
     from ..baselines import B0Policy
+
+    if name not in POLICY_NAMES and Path(name).exists():
+        import gymnasium
+        import numpy as np
+
+        from ..env.core import ACTION_DIM, FLAT_DIM
+        from ..models import SwarmActor
+
+        blob = torch.load(name, map_location=env.device, weights_only=False)
+        obs_space = gymnasium.spaces.Box(-np.inf, np.inf, shape=(FLAT_DIM,), dtype=np.float32)
+        act_space = gymnasium.spaces.Box(-1.0, 1.0, shape=(ACTION_DIM,), dtype=np.float32)
+        kw = {"architecture": blob["architecture"], "hidden": blob.get("hidden")}
+        if blob.get("recurrent"):
+            from ..models import SwarmActorRNN
+
+            actor = SwarmActorRNN(
+                obs_space,
+                act_space,
+                env.device,
+                num_envs=n,
+                rnn_hidden=blob.get("rnn_hidden", 128),
+                sequence_length=blob.get("sequence_length", 16),
+                **kw,
+            ).to(env.device)
+            hidden = [torch.zeros(actor.rnn_layers, n, actor.rnn_hidden, device=env.device)]
+        else:
+            actor = SwarmActor(obs_space, act_space, env.device, **kw).to(env.device)
+            hidden = None
+        actor.load_state_dict(blob["policy"])
+        actor.eval()
+
+        @torch.no_grad()
+        def act_checkpoint(obs):
+            inputs = {"observations": obs["flat"].reshape(n, FLAT_DIM)}
+            if hidden is not None:
+                inputs["rnn"] = hidden
+            mean, extra = actor.compute(inputs)
+            if hidden is not None:
+                hidden[0] = extra["rnn"][0]
+            return mean.view(1, n, ACTION_DIM)
+
+        return act_checkpoint
 
     if name == "random":
         gen = torch.Generator(device=env.device).manual_seed(0)

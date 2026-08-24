@@ -73,7 +73,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--route", type=int, default=0)
     ap.add_argument("--worst", action="store_true", help="pick the route most often indoors")
-    ap.add_argument("--policy", choices=POLICIES, default="b0")
+    ap.add_argument(
+        "--policy",
+        default="b0",
+        help=f"one of {POLICIES}, or a path to a Block G checkpoint (runs/<name>/checkpoint.pt)",
+    )
     ap.add_argument("--compare", action="store_true", help="one figure per policy, same route")
     ap.add_argument("--fidelity", choices=FIDELITIES, default="F4", help="Block F rung")
     ap.add_argument(
@@ -107,7 +111,8 @@ def main() -> None:
                 no_buildings=rung == "F0-nogeo",
             )
             report(trace)
-            stem = f"route{route}_{name}" + ("" if rung == "F4" else f"_{rung}")
+            label = name if name in POLICIES else Path(name).parent.name
+            stem = f"route{route}_{label}" + ("" if rung == "F4" else f"_{rung}")
             # Vector, because these go into the thesis. Raster only for the video.
             fig_path = a.out / f"{stem}.pdf"
             figure(trace, out=fig_path, art=art)

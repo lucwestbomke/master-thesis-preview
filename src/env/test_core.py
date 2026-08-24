@@ -472,3 +472,77 @@ def test_neighbour_index_table_matches_the_packing_order():
             EnvConfig(num_envs=1, num_drones=n, seed=0, compile_occlusion=False)
         ).nb_idx,
     )
+
+
+# --------------------------------------------------------------------------- #
+# The Block G seams: curriculum reweighting and the training-only extras
+# --------------------------------------------------------------------------- #
+
+
+def test_training_extras_are_off_by_default():
+    """They widen the `extras` contract, which `test_golden.py` pins. Off by
+    default is what keeps the frozen trace valid without a re-capture."""
+    env = make(num_envs=2, no_buildings=True)
+    assert env.cfg.training_extras is False
+    _, _, _, _, extras = env.step(zeros_like_actions(env))
+    assert not [k for k in extras if k == "final_state" or k.startswith("reward/")]
+
+
+def test_final_state_is_the_pre_reset_state_not_the_fresh_episode():
+    """The one that matters for correctness.
+
+    skrl bootstraps a truncation as `gamma * V(next_observations, next_states)`.
+    With auto_reset the tensors `step()` returns are a FRESH episode's opening,
+    so bootstrapping off them values an unrelated state -- silently, and at
+    gamma = 0.997 on returns of order 300. `final_state` is what the learner
+    must be handed instead, and this asserts the two really do differ exactly
+    where it matters and agree everywhere else.
+    """
+    stage1 = (1.0, 0.0, 0.0, 0.0)
+    env = make(num_envs=4, stage_weights=stage1, no_buildings=True, training_extras=True)
+    steps = STAGES[0].episode_steps
+    for step in range(1, steps + 1):
+        obs, _, term, trunc, extras = env.step(zeros_like_actions(env))
+        assert "final_state" in extras
+        assert extras["final_state"].shape == obs["state"].shape
+        done = term | trunc
+        if not done.any():
+            # No reset happened: the second physics pass re-evaluates an
+            # unchanged state, so the two must agree element for element.
+            assert torch.equal(extras["final_state"], obs["state"]), f"step {step}"
+        else:
+            assert done.all() and step == steps
+            assert not torch.equal(extras["final_state"], obs["state"])
+            # and `final_observation` is the same story for the actor's view
+            assert not torch.equal(extras["final_observation"], obs["flat"])
+
+
+def test_reward_terms_sum_to_the_reward_they_decompose():
+    """Instrumentation that disagreed with the objective would be worse than
+    none: it would attribute a flat return curve to the wrong term."""
+    env = make(num_envs=4, no_buildings=True, training_extras=True)
+    for _ in range(5):
+        actions = torch.empty(env.cfg.num_envs, env.cfg.num_drones, 3, device=env.device).uniform_(
+            -1, 1
+        )
+        _, rew, _, _, extras = env.step(actions)
+        terms = [v for k, v in extras.items() if k.startswith("reward/")]
+        assert len(terms) == 6
+        assert torch.allclose(torch.stack(terms).sum(0), rew, atol=1e-5)
+
+
+def test_set_stage_weights_moves_which_stage_fresh_episodes_draw():
+    """The curriculum's only seam into the env. It must reach *new* episodes and
+    nothing else -- the physics, the route bank and the reward are untouched."""
+    env = make(num_envs=64, stage_weights=(1.0, 0.0, 0.0, 0.0), no_buildings=True)
+    assert float(env.episode_len.max()) == float(STAGES[0].episode_steps)
+
+    env.set_stage_weights((0.0, 0.0, 0.0, 1.0))
+    for _ in range(STAGES[0].episode_steps):
+        env.step(zeros_like_actions(env))
+    assert float(env.episode_len.min()) == float(STAGES[3].episode_steps)
+
+    with pytest.raises(ValueError):
+        env.set_stage_weights((1.0, 0.0))
+    with pytest.raises(ValueError):
+        env.set_stage_weights((0.0, 0.0, 0.0, 0.0))

@@ -32,7 +32,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
 | **F** | Fidelity levels F0–F4 as config flags — RQ1's independent variable | ✅ **done**, 38 + 9 tests; `R` = **524 m** measured; F4 == the pre-Block-F env — [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
-| G | MAPPO integration + curriculum | ⬅️ **next** — spec written, [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
+| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 315 tests. **Gate met**: MAPPO 74.8 % [12.7] vs random 35.1 % on stage 1, 5 training seeds. G1a/G1b await CUDA — [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
 | H | Sionna offline validation of the closed-form channel | not started |
 
 Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
@@ -47,6 +47,29 @@ specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_F.md`](docs/BLOCK_F.md), Block G in
 [`docs/BLOCK_G.md`](docs/BLOCK_G.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+🔨 **Block G is in progress and the gate is met.** MAPPO reaches **74.8 % [12.7]**
+mission-capable on curriculum stage 1 against random's **35.1 %** (5 **training**
+seeds, deterministic, scored through `evaluate.py` on the train split, MPS).
+The spread is wide (60–78 %) and B0 still wins that stage at 87.5 %. Three
+things to carry before touching the trainer — [`docs/BLOCK_G.md`](docs/BLOCK_G.md):
+
+1. ☠️ **Never set `clip_actions=True` on the actor.** skrl clamps the sampled
+   action and then evaluates its log-probability under the *unclamped* Normal,
+   which inverts learning: under a reward whose only term is `mission_capable`,
+   the policy fell 30 % → 4.6 %. The tell is the action standard deviation rising
+   with `entropy_loss_scale = 0`. `core._advance_drones` clamps actions itself.
+2. **Training uses `SharedPolicyWrapper`, not `SwarmMultiAgentWrapper`.** The
+   swarm is ONE parameter-shared agent over `num_envs * N` rows. Per-drone
+   policies cannot be evaluated at `N = 8`, so RQ2's zero-shot columns would not
+   exist — and handing skrl one shared `Model` under `N` agent ids builds `N`
+   optimizers over the same parameters and runs `N` stale sequential updates.
+3. **The learner must be handed `env.final_observations()` / `final_states()`**,
+   not what `step()` returns. With `auto_reset` the returned tensors are already a
+   fresh episode's opening, so `time_limit_bootstrap=True` would bootstrap an
+   unrelated state — silently, while the flag still looks correct. Needs
+   `EnvConfig(training_extras=True)`, which is off by default so the golden trace
+   is untouched.
 
 ⚙️ **Block F built RQ1's independent variable.** `EnvConfig.fidelity` is a
 five-value enum (`"F0"`…`"F4"`, default `"F4"`) and every flag derives from it —
@@ -129,7 +152,7 @@ in both paths. Do not reason about VRAM pressure from it.
 | [`docs/BLOCK_C.md`](docs/BLOCK_C.md) | touching occlusion, or the geometry it consumes |
 | [`docs/BLOCK_D.md`](docs/BLOCK_D.md) | building the env core, or touching altitude / cue / sensor / the throughput gate |
 | [`docs/BLOCK_F.md`](docs/BLOCK_F.md) | touching the fidelity ladder, `R`, or anything RQ1 reports |
-| [`docs/BLOCK_G.md`](docs/BLOCK_G.md) | **building models, the trainer or the curriculum** |
+| [`docs/BLOCK_G.md`](docs/BLOCK_G.md) | **building models, the trainer or the curriculum** — read the anti-learning bug first |
 
 ---
 
@@ -238,6 +261,15 @@ mean ± std — RL returns are not normally distributed. Never report single run
   `torch.Generator` streams differ per device, so the same seed draws *different
   episodes* on MPS than on CPU. The physics is identical; the sample is not.
 - ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
+- ⛔ **Train through `SwarmMultiAgentWrapper`.** It is the API-contract wrapper.
+  Reported runs go through `SharedPolicyWrapper` — see the Block G note above.
+- ⛔ **Turn `training_extras` on for a run that reports a number without saying
+  so.** It widens the `extras` contract `test_golden.py` pins. Training needs it;
+  measurement scripts do not.
+- ⛔ **Use adaptive curriculum advancement in a reported run.** It hands the
+  easier fidelity rungs more experience at the final stage and confounds RQ1
+  unrecoverably. `curriculum.weights()` is a pure function of training progress
+  so that it *cannot* see the rung.
 - ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
   and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
 
@@ -292,8 +324,8 @@ detectability modelling.
 src/env/       channel, routing, energy, reward, occlusion, batched core
 src/baselines/ B0 scripted control + the rollout/metrics harness
 src/viz/       shared scene drawing + presentation figures and videos
-src/models/    GNN / DeepSets / MLP actor-critic     (to build)
-src/training/  skrl wrappers, entrypoints
+src/models/    GNN / DeepSets / MLP actors + one shared critic
+src/training/  skrl wrappers, curriculum, train.py entrypoint
 scripts/       offline data prep + scenario tooling
 configs/       YAML per experiment condition
 data/          baked artefacts — frankfurt_box.npz IS the frozen environment
@@ -319,7 +351,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 284 tests (+4 CUDA-only skips)
+uv run pytest                                    # 315 tests (+4 CUDA-only skips)
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for
@@ -357,6 +389,16 @@ rung, which is how the F0 chain running through a tower becomes visible:
 uv run python scripts/calibrate_r.py    --seeds 8 --num-envs 64 --device mps
 uv run python scripts/eval_fidelity.py  --seeds 5 --num-envs 64 --device mps
 uv run python scripts/render_episode.py --policy b0 --route 12 --compare-fidelity
+```
+Block G. `train.py` is one `(fidelity, architecture, seed)` cell; `eval_policy.py`
+scores a checkpoint through the *same* `evaluate.py` B0 was scored with, so the
+numbers are comparable:
+```bash
+uv run python -m src.training.train --fidelity F4 --arch mlp --seed 0 \
+    --env-steps 10000000 --num-envs 1024 --device cuda
+uv run python -m src.training.train --stage 1 --env-steps 4000000 --device mps  # the toy gate
+uv run python scripts/eval_policy.py runs/F4-mlp-s0/checkpoint.pt \
+    --policy random b0 --n 3 5 8 --seeds 5 --device cuda
 ```
 **`--device mps` is ~17× on Apple silicon** (5 min against ~1.5 h) and the
 physics is identical — but it draws *different episodes* for the same seed, so
