@@ -199,9 +199,11 @@ def build(cfg: TrainConfig) -> tuple[SharedPolicyWrapper, MAPPO, CurriculumCallb
 
     memory = RandomMemory(memory_size=cfg.rollouts, num_envs=env.num_envs, device=dev)
     if cfg.recurrent:
-        from skrl.agents.torch.ppo import PPO_RNN
+        # ⚠️ NOT skrl's PPO_RNN: it stores the post-step hidden state as the
+        # pre-step one for every transition after the first. See recurrent_ppo.
+        from .recurrent_ppo import PPO_RNN_Aligned
 
-        agent = PPO_RNN(
+        agent = PPO_RNN_Aligned(
             models={"policy": actor, "value": critic},
             memory=memory,
             observation_space=env.observation_spaces[SWARM_UID],

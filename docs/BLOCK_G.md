@@ -406,7 +406,28 @@ diagnosis that motivated it still stands and somebody will propose this again.
    policy also collapses at **stage 1**, where episodes are 150 steps and the
    feedforward policy reaches 75–79 %.
 
-5. **✅ The fault is LOCALISED to sequence replay.** `--seq-len 1` makes skrl take
+5. **✅ A real skrl bug found and fixed — and it was NOT the cause.**
+   `PPO_RNN.record_transition` ends with
+   `self._rnn_initial_states = self._rnn_final_states`, binding both names to the
+   **same dict**. From the next step on, `act()` writes the post-step state into
+   `_rnn_final_states` -- which *is* `_rnn_initial_states` -- so the transition
+   records a hidden state one step ahead of the one that produced its action.
+   Measured directly: `stored[t] == h_in[t+1]` for every `t >= 1`, exact only at
+   `t = 0`, before the aliasing happens. Every importance ratio in every
+   recurrent update was computed against the wrong state.
+
+   Fixed by `training/recurrent_ppo.PPO_RNN_Aligned`, which snapshots the states
+   in `act()` before skrl can overwrite them. `test_recurrent.py` pins the root
+   cause directly (the memory must hold the state the action was taken from) and
+   the epoch-0 identity at both `--seq-len 1` and `--seq-len 4`.
+
+   ⚠️ **Fixing it changed nothing about the training.** Stage 1 still collapses
+   (37.4 % -> 2.2 %, against 35 % -> 3 % before the fix), and the known-optimum
+   probe still improves ~2x more slowly than feedforward (−0.913 -> −0.712
+   against −0.912 -> −0.416). The bug was real, is worth having fixed, and was
+   not the mechanism. **Recurrence remains unresolved.**
+
+6. **The fault is localised to sequence replay** — before and after the fix. `--seq-len 1` makes skrl take
    its non-sequence sampling path (no reordering, no sequence grouping) and
    changes nothing else — same GRU, same agent, same config. It **does not
    collapse**: at stage 1 it dips to 13 % and then recovers to **39.6 % and
@@ -424,6 +445,17 @@ which path contains it.
 Since `SharedPolicyWrapper` already presents the swarm as one parameter-shared
 agent, skrl's MAPPO at a single agent id *is* PPO with a centralized state-based
 critic, so `PPO_RNN` was used as the vehicle — same algorithm, different class.
+**Where to resume, and the strongest untested hypothesis first.** The critic is
+**feedforward while the policy is recurrent**. The policy's behaviour then
+depends on a hidden state the value function cannot see, so `V(s)` is an average
+over hidden states and every advantage is biased for exactly the
+history-dependent behaviour the GRU exists to produce. Yu et al. (2022) make
+both recurrent. That is one flag away and has never been tried.
+
+Second: `grad_norm_clip = 0.5` is applied to the policy and value parameters
+**jointly**, and a GRU's gradient norm is much larger than an MLP's -- so the
+clip may be squashing the critic's update whenever the actor's is big.
+
 `--seq-len 1` is the working fallback and the bisection point: it bypasses
 sequence replay, so a recurrent policy still carries hidden state through
 collection and evaluation — which is what role persistence needs — but gets no
