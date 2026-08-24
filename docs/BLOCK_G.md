@@ -505,6 +505,56 @@ Two things to carry:
    that as well as any schedule. The reason to keep the curriculum is that it
    works, not that RQ1 needs it.
 
+### The equal-budget sweep — `scripts/sweep.py`
+
+`MODELS.md` rule 2 has been owed since the block opened: *equal hyperparameter
+budget across all three architectures, and say so in the methodology*. BLOCK_G
+decision 3 gives it an operational definition — same search space, same number of
+trials, same selection rule, per architecture — and this executes and records it.
+
+```bash
+uv run python scripts/sweep.py --device cuda            # stage A, 81 runs
+uv run python scripts/sweep.py --device cuda --stage-b  # winners, 5 seeds, eval split
+uv run python scripts/sweep.py --report-only            # the tables, any time
+```
+
+**Two stages, and the eval split is touched exactly once.** Stage A runs the full
+grid on the **train** split at 3 seeds per cell and selects on median
+`mission_capable` scored through `evaluate.py`, ties broken by smaller IQR —
+declared before any result was seen. Stage B re-runs each architecture's winner
+at 5 seeds and reports on the eval split.
+
+**The grid: 3 architectures x 3 cadences x 3 shapings x 3 seeds = 81 runs.** At
+the measured CUDA throughput that is roughly an hour.
+
+| cadence | num_envs | rollouts | mini_batches | grad steps / M env-steps |
+|---|---|---|---|---|
+| `base` | 1024 | 32 | 4 | 488 |
+| `wide` | **4096** | 32 | **16** | 488 |
+| `deep` | **4096** | **64** | **32** | 488 |
+
+**Batch size and update cadence cannot be swept independently** — raising
+`num_envs` at fixed `rollouts` divides the optimizer steps by the same factor.
+Each preset therefore holds gradient density *constant at 488* and varies what
+the extra samples buy: `wide` spends them on a bigger batch (less gradient noise,
+aimed at the seed spread), `deep` on a longer GAE horizon (γ = 0.997 has an
+effective horizon of 333 steps and the rollout currently sees 32). The first CUDA
+session is what makes this free: `ms/call` is **flat from 256 to 4096
+environments**, so a 4x batch costs nothing.
+
+Shapings are `shipped`, `d_ref=400`, and `d_ref=400 + potential_scale=30` — the
+only reward knobs the design permits, all inside `Phi` and so optimum-preserving
+by the PBRS proof.
+
+⛔ **Not swept, deliberately:** the learning rate (fixed at 3e-4 so cadence is not
+confounded with it — if a winner sits at a boundary, sweep it separately and say
+so), the curriculum schedule (measured: the shipped one wins), and **fidelity**,
+which is RQ1's independent variable and never a tuning axis.
+
+⚠️ **The search runs per architecture.** Tuning on the GNN and applying its winner
+to the other two is exactly the unequal budget the rule forbids, and it is the
+tempting shortcut because the GNN is currently ahead.
+
 ### What is still open
 
 * **G1a / G1b** — blocked on CUDA.
