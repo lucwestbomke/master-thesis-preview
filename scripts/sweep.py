@@ -63,8 +63,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from eval_policy import med_iqr, score
 
-SWEEP_DIR = ROOT / "runs" / "sweep"
-SUMMARY = SWEEP_DIR / "summary.jsonl"
+# ⚠️ The summary is a RESULT, not a build artefact, so it lives outside the
+# gitignored `runs/` with the checkpoints. One 30 KB file carries every number
+# this sweep produced, which means the machine that ran it can `git push` and the
+# machine that analyses it can `git pull` -- no file juggling between a rented
+# pod and a laptop, and the provenance is versioned with the code that made it.
+RESULTS_DIR = ROOT / "results"
+SUMMARY = RESULTS_DIR / "sweep_summary.jsonl"
 
 
 @dataclass(frozen=True)
@@ -190,7 +195,7 @@ def evaluate_one(a, name: str, eval_split: bool) -> dict[str, float]:
 
 
 def append(row: dict) -> None:
-    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     with SUMMARY.open("a") as handle:
         handle.write(json.dumps(row) + "\n")
 

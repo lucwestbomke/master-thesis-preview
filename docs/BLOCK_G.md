@@ -518,6 +518,12 @@ uv run python scripts/sweep.py --device cuda --stage-b  # winners, 5 seeds, eval
 uv run python scripts/sweep.py --report-only            # the tables, any time
 ```
 
+Results append to **`results/sweep_summary.jsonl`**, which is tracked rather than
+living under the gitignored `runs/`: the summary is a *result*, the checkpoints
+are regenerable. One 30 KB file carries every number the sweep produced, so the
+pod that ran it pushes and the laptop that analyses it pulls — no scp, and the
+provenance is versioned with the code that made it.
+
 **Two stages, and the eval split is touched exactly once.** Stage A runs the full
 grid on the **train** split at 3 seeds per cell and selects on median
 `mission_capable` scored through `evaluate.py`, ties broken by smaller IQR —
