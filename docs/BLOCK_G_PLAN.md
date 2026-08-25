@@ -15,37 +15,44 @@ Tags follow `AGENTS.md` → *How to read these documents*: 📏 measured ·
 
 ## 1. Position
 
-📏 One blocking number, one diagnosed cause.
+**Updated 2026-08-25 after Gate 1 and sweep stage B.** 📏 Eval split, F4, stage 4,
+CUDA, 5 seeds, one harness — the first fully comparable table this block has had:
 
-| | value | source |
-|---|---|---|
-| best learned policy, full mission | **45.1 % [3.0]** | GNN, `deep`, train split, sweep stage A |
-| B0, same harness and split | **57.5 % [1.4]** | `eval_policy.py`, CUDA, 3 seeds |
-| **gap** | **12.4 pp** | against 36 pp of headroom to the 93 % sensor ceiling |
+| policy | capable | observed | tenure | hops |
+|---|---|---|---|---|
+| random | 10.7 % [0.2] | 21.9 % | 16.3 | 0.4 |
+| MLP | 31.2 % [1.2] | 53.8 % | 34.1 | 1.00 |
+| DeepSets | 38.1 % [1.0] | 65.3 % | 41.6 | 1.23 |
+| **GNN** | **41.2 % [3.8]** | 66.5 % | 47.2 | 1.27 |
+| **B0** | **57.3 % [3.9]** | **92.8 %** | **294.7** | **2.1** |
 
-| signature | B0 | learned | reading |
+**Gap 16.1 pp.** The learned policy closes 65 % of the random→B0 distance and
+stops. ⚠️ The old 45.1 % headline was the winner's curse on a noise axis;
+`shipped` at 5 seeds gives 40.7 %.
+
+### The diagnosis, reframed by Gate 1
+
+| conditioned on holding a sightline | random | GNN | B0 |
 |---|---|---|---|
-| **observer tenure** | **264.6** | **47.4** | steps one drone holds the role — **5.6× short** |
-| `observed` | 92.8 % | 67.4 % | the shadow of tenure, not a second failure |
-| capable ÷ observed | 0.62 | **0.67** | learned *control* already beats B0, given a sightline |
-| observer stand-off | 79 m | 291 m | ≈37° elevation against ≈12° |
-| corr(capable, tenure) | — | — | **0.875** across all 81 sweep runs |
+| `capable / observed` | 0.489 | **0.620** | **0.617** |
+| `hop_mean / observed` | **1.83** | **1.91** | 2.26 |
 
-**Nobody commits to the observer role.** The swarm flies, routes and relays; it
-cannot hold a sightline. 📏 The 81-run sweep moved tenure **12 steps out of 218**,
-and `d_ref 400` (3.8× the closing gradient) and `potential_scale 30` were both
-nulls — so tuning is finished as a strategy and what remains is structural.
+📏 **Given a sightline, the GNN converts it exactly as well as B0.** The whole gap
+is `observed`. And conditioned on observing, learned chain structure is
+**indistinguishable from random** — the swarm learned to fly at the target and
+nothing about relaying.
 
-Two candidate fixes are built and unmeasured on the full mission:
+🔍 **One mechanism fits both.** B0 parks its observer at **79 m** and *therefore*
+needs 2.1 hops; the learned policies loiter at **291 m** on 1.27 hops. Going in
+close is only survivable if teammates relay behind you, so with a shared team
+reward and no per-drone role signal **no drone can afford to be the one that goes
+in.** A coordination trap. The deficit is **role emergence**; observer tenure and
+the missing chain are its symptoms.
 
-* **recurrence** — the representational route. A stateless policy provably cannot
-  represent B0, which carries state. Blocked for a month by a skrl bug (§6 of
-  `BLOCK_G.md`); now fixed, reaching feedforward parity at stage 1.
-* **`w_hold`** — the reward route. 📏 While the swarm is *succeeding* every reward
-  term is flat, so nothing distinguishes holding a sightline from drifting out of
-  it (`REWARD.md` → the flat-success problem). Ships at `w_hold = 0`.
-
----
+⛔ Both Gate 1 candidates failed their pre-declared rules — recurrence
+**dropped** (−1.05 pp, tenure 36.8 against a required 95, seed IQR *widened*
+4.7 → 6.9), `w_hold` **null** (+1.65 pp on a 6.8 IQR). Recorded in
+`DECISIONS.md`.
 
 ## 2. Destinations
 
@@ -78,7 +85,16 @@ becomes a reported finding rather than a failure.
 
 ---
 
-## 3. Track A — the GPU session
+## 3. ~~Track A~~ — COMPLETE 2026-08-25
+
+Kept for reproduction. A0–A5 all ran; results in §1 and `BLOCK_G.md`.
+⚠️ A4 exposed a real bug — stage B appended eval rows unconditionally, so an
+interrupted-and-resumed stage B double-counted seeds (`n = 9` where 5 were
+asked for). Guarded now, and `scripts/dedupe_summary.py` cleans an affected
+file. 📏 On this occasion no reported number moved: the MLP row reads
+31.2 % [1.2] before and after the dedupe.
+
+### Original commands
 
 ### A0. Sync, and run the suite **on the GPU box**
 
@@ -177,36 +193,44 @@ split is touched here **once, for confirmation, never for selection**.
 
 ---
 
-## 4. Gate 1 — declared before the runs
+## 4. ~~Gate 1~~ — RESOLVED 2026-08-25: both candidates dropped
 
-**Read `observer_tenure` first, `observed` second, `mission_capable` third.**
-📏 `corr(capable, tenure) = 0.875`; tenure is the mechanism and capable is its
-shadow. And judge on the **worst seed**, not the median — `BLOCK_G.md`'s own
-lesson from the curriculum refutation.
+Kept for the record; the rules were declared before the runs and applied
+unchanged. Full tables in `BLOCK_G.md` § *G8*.
 
-| factor | keep it if | drop it if |
-|---|---|---|
-| **recurrence** | tenure ≥ 95 **and** capable ≥ 45.1 % | tenure moves < 20 % **and** capable within IQR |
-| **`w_hold`** | capable +≥3 pp on the median **and** the worst seed also improves | the worst seed does not improve |
+| factor | rule | measured | verdict |
+|---|---|---|---|
+| recurrence | keep if tenure ≥ 95 **and** capable ≥ 45.1 % | 36.8 / 39.7 | ⛔ **drop** |
+| `w_hold` | keep if capable +≥3 pp **and** worst seed improves | passed a different half in each arm | ⛔ **null** |
 
-If `w_hold` helps *only* under recurrence, that is a finding in its own right: the
-reward gradient needs a policy that can act on it, which would explain why every
-shaping change so far returned a null.
+Two things the negative bought, and they are worth more than the gate:
 
-**→ If either works (capable > 50 %).** Re-run the winning cell at 5 seeds on the
-**eval** split against B0's 57.2 %. If it clears, D1 is met.
+1. 📏 **Conditioned on observing, learned chain structure is random.** 1.86–1.91
+   hops against random's 1.83. The relay half of the mission was never learned by
+   *any* architecture, with or without memory or shaping.
+2. ☠️ **`chain_occluded` confounds with hop count** (`corr = 0.963`). It is RQ1's
+   designated failure-attribution metric and it is not usable as defined — see
+   `DECISIONS.md`.
 
-**→ If both are null (still ~45 %).** Two free, untried levers remain, then §5:
+### Gate 2 — the role-emergence probe
 
-* **`Φ_link`'s chain-clearance term.** Same flat-success defect — a formed chain
-  reads `sigmoid((60−15)/6) = 0.999` while 📏 `chain_occluded` runs 33–41 %.
-  Capacity saturates at the MCS ceiling, so rate cannot carry the margin signal;
-  clearance can. Not built.
-* 🔧 **`Φ`'s component weights `w_a` / `w_o` / `w_l`.** Never locked (corrected in
-  `REWARD.md` 2026-08-25) and never moved. Given the deficit is observation
-  persistence, `w_observe` against `w_link` is the obvious try.
+The reframe above is a hypothesis with one cheap, PBRS-safe test. `REWARD.md`
+rules out per-drone potentials on the grounds that they cluster the swarm onto the
+HVT — but that was **reasoned, not measured**, and Devlin & Kudenko (2011) extend
+the PBRS invariance to the multi-agent case, so a per-agent `Φ_i` cannot move the
+equilibrium either.
 
----
+Declare the rule before running it, as always. Draft — to be fixed before the
+first run:
+
+> Per-drone `Φ_i` giving each drone its *own* approach/observe potential, crossed
+> against the shipped team `Φ`, GNN, `deep`, 5 seeds, train split.
+> * **keep** if `hop_mean | observed` ≥ 2.1 (i.e. the chain becomes non-random)
+>   **and** capable ≥ 41.2 %
+> * **kill** if the swarm clusters — `nearest_dist_m` falls while `hop_mean` does
+>   not rise, which is exactly the failure `REWARD.md` predicts
+> * ⚠️ report `observer_dist_m` spread across drones: role emergence should show
+>   as **one** drone close and the rest back, not five at the same radius
 
 ## 5. ⛔ Stopping rule — 2026-12-31
 
@@ -228,7 +252,9 @@ None of these depend on Gate 1.
 |---|---|---|
 | ⚠️ **Close both `TODO(verify)` sets** | see §7 — everything downstream re-derives if wrong | Sep |
 | Diagnose the seed spread | 📏 60–78 % over five stage-1 runs, bimodal, undiagnosed. Every tuning decision is read through it | Sep |
-| `Φ_link` chain-clearance term | only if Gate 1 needs it | Sep |
+| **Gate 2 — the per-drone `Φ_i` probe** | Gate 1's reframe says the deficit is role emergence; this is its cheapest direct test (§4) | **Sep** |
+| `Φ_link` chain-clearance term | Gate 1 said yes — 📏 conditioned on observing, learned chains are *random* | Sep |
+| Fix `chain_occluded` to a per-edge rate | ☠️ it confounds with hop count and RQ1 depends on it | Sep |
 | Measure, then 🔒 **freeze**, the curriculum schedule | 🔧 `(0.15, 0.35, 0.60)` + 20 % mix is provisional; RQ1 needs it identical across rungs | Oct |
 | **G7** — fidelity attribution pilot | do F0/F2/F3-trained policies separate under F4 on hop count, `chain_occluded`, p5 capacity? If not, RQ1's headline survives but its *attribution* does not | Oct |
 | Port RNN onto skrl's **current** `PPO` | only if recurrence is kept. Removes "our algorithm runs on a patched stale fork" from the viva | Nov |

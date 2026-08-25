@@ -11,6 +11,65 @@ whether this project has a thesis.
 
 ---
 
+## 📏 The Block G results table
+
+Everything below is **eval split, F4, stage 4, CUDA, 5 seeds, median [IQR]**,
+scored through `evaluate.py` — one device, one split, one harness, so these rows
+are comparable with each other and with nothing else in this repo.
+
+| policy | mission capable | observed | observer tenure | hop mean | p5 capacity |
+|---|---|---|---|---|---|
+| random | 10.7 % [0.2] | 21.9 % | 16.3 | 0.4 | 0.0 |
+| MAPPO **MLP** | 31.2 % [1.2] | 53.8 % | 34.1 | 1.00 | 0.0 |
+| MAPPO **DeepSets** | 38.1 % [1.0] | 65.3 % | 41.6 | 1.23 | 0.0 |
+| MAPPO **GNN** | **41.2 % [3.8]** | 66.5 % | 47.2 | 1.27 | 0.0 |
+| **B0 — the floor** | **57.3 % [3.9]** | **92.8 %** | **294.7** | **2.1** | **4.5** |
+
+**The gate is not met: 41.2 % against 57.3 %, a 16.1 pp gap.** The learned policy
+closes 65 % of the distance from random to B0 and stops.
+
+✅ B0's **57.3 %** here reproduces Block E's **57.2 %** measured on CPU. Device
+changes which episodes are drawn, not the physics, and at 5 × 128 episodes the
+aggregate is stable — which cross-validates the harness across devices even
+though ⛔ individual runs still must not be compared across them.
+
+### 📏 The gap is `observed`, and nothing else
+
+| conditioned on holding a sightline | random | MLP | DeepSets | GNN | B0 |
+|---|---|---|---|---|---|
+| `capable / observed` | 0.489 | 0.580 | 0.583 | **0.620** | **0.617** |
+| `hop_mean / observed` | 1.83 | 1.86 | 1.88 | **1.91** | **2.26** |
+
+**Given a sightline, the GNN converts it into mission capability exactly as well
+as B0 does — 0.620 against 0.617.** The entire 16.1 pp gap is the first row of
+the table above: `observed` at 66.5 % against 92.8 %.
+
+⚠️ And the second row is the finding nobody was looking for. **Conditioned on
+observing, every learned policy's chain is indistinguishable from a random
+policy's** — 1.86 / 1.88 / 1.91 against random's **1.83** — while B0 sits at
+2.26. The routing is `best_relay_path`, computed by the env from whatever
+geometry the policy produces, so 1.8 hops is simply what scattered drones give
+you. **The swarm learned to fly at the target and learned nothing at all about
+relaying.**
+
+### 🔍 One mechanism explains both rows
+
+B0 parks its observer **79 m** from the HVT — nearly overhead, where the sightline
+survives the target moving down a street — and *therefore* needs a 2.1-hop chain
+to reach the MCV. The learned policies loiter at **291 m**, keep a 1.27-hop chain,
+and hold the sightline 42 % of the time instead of 94 %.
+
+**Going in close is only survivable if teammates relay behind you.** A drone that
+closes to 79 m loses its own link to the MCV; the move pays off only when the
+swarm has already differentiated into an observer and a chain. With a shared team
+reward and no per-drone role signal, **no drone can afford to be the one that
+goes in** — so none do, and the swarm settles at the stand-off distance where
+every drone can do a mediocre version of both jobs.
+
+That is a **coordination trap**, and it reframes the deficit: not observation
+persistence, not chain-building, but **role emergence**, of which those two are
+the symptoms.
+
 ## ✅ Built and measured — G0–G4
 
 The gate is met. **MAPPO beats random on curriculum stage 1**, scored
@@ -554,6 +613,103 @@ MODELS.md rule 2. Say so in the methodology.
 
 Cost, if kept: ~1.6× wall-clock (13.2 k against 20.6 k env-steps/s on MPS).
 Compute is not a constraint (G1b: ~2 GPU-hours for the entire 45-run matrix).
+
+### 📏 G8 — Gate 1: recurrence and `w_hold`, crossed. Both fail.
+
+The 2×2 `BLOCK_G_PLAN.md` §4 declared, run 2026-08-25. GNN, `deep` cadence,
+`shipped` shaping, F4, stage 4, **train** split (a tuning decision, so not eval),
+CUDA, 5 seeds. Rules were fixed before the runs.
+
+| cell | capable | IQR | worst seed | tenure |
+|---|---|---|---|---|
+| ff + shipped | 40.7 % | 3.2 | 29.6 | 43.2 |
+| ff + `w_hold` | 40.8 % | 5.9 | 35.6 | 39.0 |
+| rnn + shipped | 35.3 % | 5.0 | 30.8 | 36.8 |
+| **rnn + `w_hold`** | **41.4 %** | 2.5 | 27.3 | 37.1 |
+| B0 (train split) | 59.6 % | 2.0 | 57.4 | 272.7 |
+
+**⛔ Recurrence — dropped.** Keep required tenure ≥ 95 and capable ≥ 45.1 %;
+measured **36.8** and **39.7**. The drop rule is met outright: tenure moves
+**−9.3 %** (rule: < 20 %) and capable **−1.1 pp** on a 4.7 IQR (rule: within IQR).
+Pooled over 10 runs per level, recurrence is **−1.05 pp** and *widens* the seed
+IQR 4.7 → 6.9.
+
+⚠️ **This is not the same result as "recurrence does not train".** It trains fine
+now and reaches feedforward parity at stage 1. It simply does not help on the full
+mission. The `PPO_RNN` fix was still worth having — it removed a real bug and a
+false diagnosis — but the hypothesis it unblocked did not pay.
+
+**⛔ `w_hold` — null.** Keep required +≥3 pp on the median **and** the worst seed
+improving. Under ff: median **+0.08** ✗, worst **+6.0** ✓. Under rnn: median
+**+6.1** ✓, worst **−3.5** ✗. Passing a different half in each arm is what noise
+looks like; the pooled main effect is **+1.65 pp** on a 6.8 IQR. Ships at
+`w_hold = 0`.
+
+⚠️ **The sweep's 45.1 % headline does not reproduce.** `shipped` at 5 seeds gives
+**40.7 %**, matching stage A's own `gnn/deep/shipped` cell (42.9 % at 3 seeds).
+The 45.1 % was `dref400_k30` at 3 seeds — the shaping axis is noise, so that cell
+was the winner's curse, exactly as the stage-A analysis predicted. **Block G's
+real best-known number was ~41 %, not 45 %.**
+
+📏 **The bimodality got worse.** Per-seed `episode_return` runs
+4.8 / 83.8 / 90.5 / 96.8 / 108.9 in one cell and −17.8 / 75.0 / 87.5 / 95.2 / 117.1
+in another — roughly one catastrophic seed in five, not a smooth spread. Five
+seeds is barely enough to place a median. Diagnosing this is now high priority.
+
+### 📏 G5 / stage B — RQ2's first eval-split answer
+
+Each architecture at **its own** equal-budget winner, eval split, 5 seeds:
+
+| arch | winner | capable | tenure | hops | train → eval |
+|---|---|---|---|---|---|
+| MLP | `base`/`dref400` | 31.2 % [1.2] | 34.1 | 1.00 | 35.6 → 31.2 (−4.4) |
+| DeepSets | `deep`/`shipped` | 38.1 % [1.0] | 41.6 | 1.23 | 42.5 → 38.1 (−4.4) |
+| GNN | `deep`/`dref400_k30` | 41.2 % [3.8] | 47.2 | 1.27 | 45.1 → 41.2 (−3.9) |
+
+**The winner's curse is uniform — −3.9 / −4.4 / −4.4 pp.** The absolute numbers
+were optimistic by ~4 pp, but the bias applies equally, so the *ordering* is
+trustworthy. That is the equal-budget protocol doing its job.
+
+**Tenure tracks capable exactly** (34.1 / 41.6 / 47.2 against 31.2 / 38.1 / 41.2),
+so RQ2's effect runs through the mechanism the diagnosis names — a stronger
+result than a bare score ordering.
+
+⚠️ **But DeepSets → GNN is confounded with shaping.** Stage B compares best cells
+and the shapings differ. Hold cadence *and* shaping fixed:
+
+| `deep` / `shipped`, train, 3 seeds | capable |
+|---|---|
+| GNN | 42.9 % [2.1] |
+| DeepSets | 42.5 % [4.0] |
+
+**+0.4 pp — a null**, exactly as `MODELS.md` predicts for the in-distribution
+rung at N = 5. Report **MLP → DeepSets (+6.9 pp, robust)** as the finding and the
+relational rung as a null at N = 5. RQ2's informative test is **N = 8 zero-shot**
+and it is still untouched.
+
+### ☠️ `chain_occluded` confounds with hop count — RQ1 cannot use it as it stands
+
+📏 Measured on the eval split: B0 **61.5 %** against every learned policy's
+**34–40 %** — the *opposite* ordering to the stage-1 table above, and
+`corr(hop_mean, chain_occluded) = 0.963` across the five policies. More hops means
+more edges means more chances one crosses a building.
+
+`THESIS_PLAN.md` designates `chain_occluded` as **RQ1's failure-attribution
+metric**, and F4's rate division changes chain length — so comparing it across
+fidelity rungs would compare hop counts wearing an occlusion label. ⛔ **Fix this
+before RQ1 uses it**: report the *per-edge* occlusion rate, which is
+hop-count-invariant, and keep the per-chain figure only as a descriptive
+statistic.
+
+### ⚠️ Two claims in this file were wrong and are corrected here
+
+1. **"The learned policy converts observation into capability better than B0
+   (0.67 vs 0.62)."** Same-device, same-split: **0.620 against 0.617** — they are
+   identical. The earlier figure mixed provenance.
+2. **"The chain statistics are largely the shadow of the observation failure."**
+   Partly. Conditioned on observing, learned policies run 1.86–1.91 hops against
+   **random's 1.83** and B0's 2.26 — so the chain deficit survives conditioning
+   and is a failure in its own right.
 
 ### ⚠️ "The curriculum is hurting" — proposed on one seed, refuted on three
 

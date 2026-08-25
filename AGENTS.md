@@ -55,7 +55,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
 | **F** | Fidelity levels F0–F4 as config flags — RQ1's independent variable | ✅ **done**, 38 + 9 tests; `R` = **524 m** measured; F4 == the pre-Block-F env — [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
-| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 333 tests. Stage-1 gate met; **the full-mission gate is not**: best 45.1 % [3.0] against B0's 57.5 %. 81-run equal-budget sweep done — [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
+| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 339 tests. Equal-budget sweep + stage B done. **Gate not met**: GNN **41.2 % [3.8]** against B0's **57.3 %**, eval split, CUDA, 5 seeds — [`docs/BLOCK_G.md`](docs/BLOCK_G.md), plan in [`docs/BLOCK_G_PLAN.md`](docs/BLOCK_G_PLAN.md) |
 | H | Sionna offline validation of the closed-form channel | not started |
 
 Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
@@ -71,15 +71,33 @@ specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_G.md`](docs/BLOCK_G.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-🔨 **Block G is in progress. The stage-1 gate is met; the one that matters is
-not.** The 81-run equal-budget sweep puts the best feedforward policy at
-**45.1 % [3.0]** on the full mission against B0's **57.5 %** (train split, CUDA),
-and the deficit is **observer tenure: 47.4 steps against B0's 264.6**. Tuning did
-not touch it — the whole grid bought ~12 steps out of 218. Three sweep findings
-worth carrying: `deep` (rollout 64) wins and `wide` **quadrupled** the seed spread
-it was built to shrink; MLP → DeepSets is +16 pp while DeepSets → GNN is a null at
-N = 5; and the reward-shaping axis is noise, so a winner's shaping label means
-nothing.
+🔨 **Block G is in progress and the full-mission gate is NOT met.** Eval split,
+F4, CUDA, 5 seeds, one harness — random **10.7 %**, MLP **31.2 %**, DeepSets
+**38.1 %**, GNN **41.2 % [3.8]**, **B0 57.3 % [3.9]**. A **16.1 pp** gap, and the
+learned policy closes 65 % of the random→B0 distance and stops.
+
+📏 **The whole gap is `observed` — 66.5 % against 92.8 %.** Conditioned on holding
+a sightline the GNN converts it exactly as well as B0 (0.620 vs 0.617). And
+conditioned on observing, every learned policy's chain is indistinguishable from
+**random's** (1.86–1.91 hops vs random 1.83, B0 2.26): the swarm learned to fly at
+the target and nothing about relaying.
+
+🔍 **One mechanism fits both.** B0 parks its observer at 79 m and *therefore* needs
+2.1 hops; the learned policies loiter at 291 m on 1.27 hops. Going in close is only
+survivable if teammates relay behind you — so with a shared team reward and no
+per-drone role signal, **no drone can afford to be the one that goes in.** A
+coordination trap: the deficit is **role emergence**, and observer tenure
+(47 vs 295) and the missing chain are its two symptoms.
+
+⛔ **Recurrence was tested against this and dropped** (2×2, 5 seeds, pre-declared
+rule): **−1.05 pp**, tenure 36.8 against a required 95, and it *widened* the seed
+spread. `w_hold` is a null. Both recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+Sweep findings worth carrying: `deep` (rollout 64) wins and `wide` **quadrupled**
+the seed spread it was built to shrink; **MLP → DeepSets is +6.9 pp and robust**
+while DeepSets → GNN is **+0.4 pp — a null** once shaping is held fixed; and the
+shaping axis is noise, so a winner's shaping label means nothing. ⚠️ The old
+"45.1 %" headline was that noise: `shipped` at 5 seeds gives 40.7 %.
 
 ☠️ **`skrl`'s `PPO_RNN` is an un-migrated fork of an older PPO** and its stale
 `compute_gae` masks GAE on `terminated` alone, so at every truncation the

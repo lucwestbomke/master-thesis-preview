@@ -31,6 +31,60 @@ in the git log; commit messages are long on purpose.
 
 ## Design directions abandoned
 
+### ⛔ Recurrence as the fix for observer tenure — killed on its own pre-declared rule
+
+**Proposed** on a mechanism that still stands: a stateless policy provably cannot
+represent B0, which carries state, so the 5.6× observer-tenure deficit could not
+be closed by a feedforward actor. Recurrence was built, unit-tested, blocked for
+a month by a skrl bug (see the entry above), fixed, and reached feedforward parity
+at stage 1.
+
+**Killed 2026-08-25 on the full mission.** A 2×2 (recurrence × `w_hold`), GNN,
+`deep`, 5 seeds, train split, with the rule declared before the runs — keep if
+tenure ≥ 95 **and** capable ≥ 45.1 %:
+
+| pooled, 10 runs per level | capable | seed IQR | tenure |
+|---|---|---|---|
+| feedforward | 40.7 % | 4.7 | 40.5 |
+| recurrent | **39.7 %** | **6.9** | **36.8** |
+
+Tenure **36.8** against a required 95, capable **−1.05 pp**, and the seed spread
+*widened*. The drop rule is met outright.
+
+⚠️ **Distinguish this from "recurrence does not train".** It trains. It reaches
+feedforward parity at stage 1. It simply does not help on the full mission, and
+the `PPO_RNN` fix that unblocked it is still worth having — it removed a real bug
+and a false diagnosis.
+
+**What it rules out, and this is the useful part.** Memory was the strongest
+representational hypothesis for the tenure deficit. Its failure says the deficit
+is **not** that a drone cannot remember it was the observer. Combined with the
+chain evidence below, it points at role emergence instead — see `BLOCK_G.md` §
+*One mechanism explains both rows*. ⛔ Do not re-propose recurrence for tenure
+without a new mechanism; propose it for partial observability of the *cue* if at
+all.
+
+### ☠️ `chain_occluded` as RQ1's failure-attribution metric — not usable as defined
+
+📏 Measured on the eval split, CUDA, 5 seeds: B0 **61.5 %** against every learned
+policy's **34–40 %**, and `corr(hop_mean, chain_occluded) = 0.963` across the five
+policies. It is a **per-chain** statistic, so it rises with the number of edges in
+the chain: more hops, more chances one crosses a building.
+
+`THESIS_PLAN.md` designates it as RQ1's failure-attribution metric, and F4's rate
+division changes chain length — so comparing it across fidelity rungs would
+compare **hop counts wearing an occlusion label**, and the resulting "F4 chains
+are more occluded" would be arithmetic, not physics.
+
+**Fix before RQ1 uses it:** report the **per-edge** occlusion rate, which is
+hop-count-invariant. Keep the per-chain figure as a descriptive statistic only,
+and never compare it across policies or rungs with different `hop_mean`.
+
+⚠️ This also invalidates the reading in `BLOCK_G.md`'s stage-1 table that the
+learned policy's higher `chain_occluded` showed it "had not discovered the
+clearance feature". At stage 4 the ordering reverses, and hop count explains both.
+
+
 ### ⚠️ "Recurrence does not train" — believed for a week, and the GRU was innocent
 
 **Proposed and acted on:** the recurrent actor collapsed at stage 1 (37 % → 2 %)
