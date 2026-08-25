@@ -110,6 +110,7 @@ def main() -> None:
         action="store_true",
         help="Yu et al. (2022) agent-specific global state -- the intervention this probe motivates",
     )
+    ap.add_argument("--w-relay", type=float, default=None, help="per-drone relay potential")
     ap.add_argument("--no-buildings", action="store_true", help="tests only; not a rung")
     a = ap.parse_args()
 
@@ -123,6 +124,7 @@ def main() -> None:
         stage_weights=tuple(1.0 if i == a.stage - 1 else 0.0 for i in range(4)),
         no_buildings=a.no_buildings,
         agent_specific_critic=a.agent_specific_critic,
+        w_relay=a.w_relay,
     )
     env, agent, curriculum = build(cfg)
     agent.init()
@@ -190,7 +192,7 @@ def main() -> None:
 
     print(
         f"\nrollout {t} x {b} envs x {n} drones, arch={a.arch}, stage={a.stage}, "
-        f"agent_specific_critic={a.agent_specific_critic}\n"
+        f"agent_specific_critic={a.agent_specific_critic}, w_relay={a.w_relay}\n"
     )
     print("variance that lives BETWEEN DRONES at the same instant")
     print("  (0 = the signal cannot tell one drone from another)\n")

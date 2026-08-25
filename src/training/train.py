@@ -128,6 +128,11 @@ class TrainConfig:
     # drifting out of it. 0.0 = the shipped potential, bitwise.
     w_hold: float | None = None
     d_hold_m: float | None = None
+    # The per-drone relay potential -- the ONLY per-drone term in the reward, and
+    # the one intervention aimed directly at the measured credit-assignment
+    # deficit (`scripts/probe_credit.py`). PBRS-safe, including in the
+    # multi-agent case (Devlin & Kudenko 2011), so it cannot move the optimum.
+    w_relay: float | None = None
     lambda_var: float | None = None
 
     log_every: int = 20
@@ -168,6 +173,8 @@ def build_weights(cfg: TrainConfig):
         changes["w_hold"] = cfg.w_hold
     if cfg.d_hold_m is not None:
         changes["d_hold_m"] = cfg.d_hold_m
+    if cfg.w_relay is not None:
+        changes["w_relay"] = cfg.w_relay
     if cfg.lambda_var is not None:
         changes["battery_variance"] = cfg.lambda_var
     return replace(DEFAULT_WEIGHTS, **changes) if changes else DEFAULT_WEIGHTS
@@ -652,6 +659,7 @@ def main() -> None:
             d_ref_m=a.d_ref,
             w_hold=a.w_hold,
             d_hold_m=a.d_hold,
+            w_relay=a.w_relay,
             lambda_var=a.lambda_var,
             log_every=a.log_every,
             checkpoint_every=a.checkpoint_every,

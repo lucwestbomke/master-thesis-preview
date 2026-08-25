@@ -527,7 +527,11 @@ def test_reward_terms_sum_to_the_reward_they_decompose():
         )
         _, rew, _, _, extras = env.step(actions)
         terms = [v for k, v in extras.items() if k.startswith("reward/")]
-        assert len(terms) == 6
+        # 7 since Block G added the per-drone `relay` term. The count is asserted
+        # so a term cannot be added to the reward and forgotten in the
+        # decomposition -- which is how a flat return curve gets attributed to
+        # the wrong place. Update it deliberately when the reward gains a term.
+        assert len(terms) == 7
         assert torch.allclose(torch.stack(terms).sum(0), rew, atol=1e-5)
 
 

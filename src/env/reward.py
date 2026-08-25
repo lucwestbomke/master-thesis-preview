@@ -93,6 +93,11 @@ class RewardWeights:
     # nothing, which would discourage acquiring at all.
     w_hold: float = 0.0
     d_hold_m: float = 400.0
+    #: The **per-drone** relay potential. 0.0 = off, and the reward is then
+    #: byte-identical to the shipped one. See `relay_shaping()` -- this is the
+    #: only per-drone term in the whole reward, and it exists because the
+    #: measured deficit is that the relay role has no learning signal at all.
+    w_relay: float = 0.0
 
     # --- physical references for normalisation ---
     max_accel_ms2: float = 10.0
@@ -118,6 +123,9 @@ class Snapshot:
     #: the difference. Only read when `w_hold > 0`; optional so the reward's
     #: own tests can build a Snapshot without it.
     observer_dist_m: torch.Tensor | None = None
+    #: (B, N) bool -- is drone `i` carrying the delivery path this step? The one
+    #: per-drone quantity the reward uses, and only when `w_relay > 0`.
+    on_path: torch.Tensor | None = None
 
     @property
     def n_agents(self) -> int:
@@ -193,6 +201,81 @@ def potential(snap: Snapshot, w: RewardWeights) -> torch.Tensor:
     return w.potential_scale * (w.w_approach * approach + w.w_observe * observe + w.w_link * link)
 
 
+def relay_shaping(
+    snap: Snapshot,
+    next_snap: Snapshot,
+    w: RewardWeights,
+    gamma: float,
+    next_is_terminal: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """(B, N) per-drone shaping: `gamma*Phi_i(s') - Phi_i(s)`, `Phi_i = k*w_relay*on_path_i`.
+
+    ## The measured deficit this exists for
+
+    `scripts/probe_credit.py`: the critic is handed one global state repeated per
+    drone, so `max |V_i - V_j| = 0.000e+00`, and the reward is team-dominated --
+    which leaves **0.015-0.06 %** of advantage variance distinguishing one drone
+    from another. Every drone's policy gradient is
+    `grad log pi(a_i | o_i) * A` with the *same* `A`: each is told *the team did
+    well*, never *your action was the good one*. Role differentiation cannot be
+    learned from a signal that is constant across the agents it would
+    differentiate.
+
+    ## ⚠️ Why ONLY the relay term goes per-drone
+
+    `docs/REWARD.md` warns that per-drone potentials cluster the swarm: pay every
+    drone for its own proximity or its own sightline and all `N` fly at the HVT
+    and nobody relays. **That warning is correct and this respects it** --
+    `Phi_approach` and `Phi_observe` stay TEAM quantities, so once one drone has
+    the target the pull stops for everyone else, exactly as before.
+
+    `on_path` is the opposite kind of quantity. A drone can only be on the
+    delivery path by sitting *between* the source and the MCV, so paying for it
+    rewards **spreading out**, not clustering. And it is the role with no signal
+    at all today: measured on the eval split, conditioned on observing, every
+    learned policy's chain is indistinguishable from a random policy's
+    (1.86-1.91 hops against random's 1.83, B0's 2.26).
+
+    ## Sizing, which is NOT free even though the optimum is
+
+    PBRS makes any `Phi` optimum-preserving -- in the multi-agent case too
+    (Devlin & Kudenko, 2011), so this cannot move the equilibrium. **But
+    optimum-preserving is not signal-preserving.** `probe_credit.py` measured a
+    condition where 50 % of *reward* variance was per-drone and the advantage
+    still washed it out to 0.06 %: GAE accumulates the team component coherently
+    over ~19 effective steps (`lambda = 0.95`) while per-drone terms largely
+    cancel. A per-drone term has to clear that filter before it reaches the
+    gradient.
+
+    The payment is concentrated at transitions, which is the intent: joining the
+    path pays `~k*w_relay` once, holding it pays only the `(gamma - 1)*Phi` decay,
+    and joining-then-leaving nets zero. So the incentive is *take a relay slot and
+    keep it* -- precisely the commitment the swarm does not currently make.
+    At `k = 10`, `w_relay = 0.2` makes joining the chain worth two steps of full
+    mission capability. **0.2-0.5 is the range to test; 0.0 ships.**
+
+    ⚠️ The acceptance test is `probe_credit.py`'s **advantage** column, not its
+    value column. If the between-drone share does not rise, the term is not
+    reaching the gradient and its weight is too small -- the one honest reason to
+    raise it.
+    """
+    if w.w_relay <= 0.0:
+        return torch.zeros_like(snap.battery)
+    if snap.on_path is None or next_snap.on_path is None:
+        raise ValueError(
+            "w_relay > 0 needs Snapshot.on_path; the env supplies it, "
+            "a hand-built Snapshot must too"
+        )
+    scale = w.potential_scale * w.w_relay
+    phi = scale * snap.on_path.to(snap.battery.dtype)
+    phi_next = scale * next_snap.on_path.to(snap.battery.dtype)
+    if next_is_terminal is not None:
+        # Same rule as the team potential: Phi(terminal) = 0, or `gamma^T Phi`
+        # survives the telescoping and reintroduces a policy-dependent bias.
+        phi_next = torch.where(next_is_terminal.unsqueeze(-1), torch.zeros_like(phi_next), phi_next)
+    return gamma * phi_next - phi
+
+
 def shaping(
     snap: Snapshot,
     next_snap: Snapshot,
@@ -258,7 +341,11 @@ def reward(
     """(B, N) per-agent reward: shared team terms plus individual costs."""
     w = w or DEFAULT_WEIGHTS
     team = team_reward(snap, w) + shaping(snap, next_snap, w, gamma, next_is_terminal)
-    return team.unsqueeze(-1) + individual_reward(snap, w, craft)
+    return (
+        team.unsqueeze(-1)
+        + individual_reward(snap, w, craft)
+        + relay_shaping(snap, next_snap, w, gamma, next_is_terminal)
+    )
 
 
 def episode_return(
@@ -357,4 +444,5 @@ def reward_terms(
         "shaping": team(shaping(snap, next_snap, w, gamma, next_is_terminal)),
         "energy": -w.energy * power / hover_reference_power_w(craft),
         "effort": -w.effort * (snap.accel_ms2 / w.max_accel_ms2) ** 2,
+        "relay": relay_shaping(snap, next_snap, w, gamma, next_is_terminal),
     }

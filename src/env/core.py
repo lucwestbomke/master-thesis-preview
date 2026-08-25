@@ -822,6 +822,9 @@ class BatchedSwarmEnv:
             nearest_dist_m=dist_hvt.min(dim=-1).values,
             best_clearance_m=best_clr,
             observer_dist_m=dist_hvt.gather(1, observer.unsqueeze(1)).squeeze(1),
+            # The one per-drone quantity the reward can use. Only read when
+            # `w_relay > 0`; free here, since routing already produced it.
+            on_path=on_path[:, :n],
             battery=self.battery,
             speed_ms=self.drone_vel.norm(dim=-1),
             accel_ms2=self.last_accel,

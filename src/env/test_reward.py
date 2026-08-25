@@ -27,6 +27,8 @@ from .reward import (
     individual_reward,
     mission_capable,
     potential,
+    relay_shaping,
+    reward,
     shaping,
     team_reward,
     weight_constraints_satisfied,
@@ -484,3 +486,117 @@ def test_hold_never_reaches_the_degenerate_setting():
     assert float(potential(_hold_snap(500.0), w)) == float(
         potential(_hold_snap(500.0, clearance_m=-60.0), w)
     ), "at w_hold=1 a clear distant ray scores the same as a blocked one"
+
+
+# --------------------------------------------------------------------------- #
+# The per-drone relay potential -- Block G's credit-assignment deficit
+# --------------------------------------------------------------------------- #
+#
+# Measured by `scripts/probe_credit.py`: with the shipped reward, 0.015-0.06 % of
+# advantage variance distinguishes one drone from another and `max |V_i - V_j|`
+# is exactly 0. Every drone's gradient is the same. `w_relay` is the only term in
+# the reward that can change that, and PBRS bounds what it can break.
+
+
+def _relay_snap(on_path: list[bool], n: int = 5):
+    return Snapshot(
+        observed=torch.ones(1, dtype=torch.bool),
+        e2e_capacity_mbps=torch.full((1,), 40.0),
+        nearest_dist_m=torch.full((1,), 120.0),
+        best_clearance_m=torch.full((1,), 1e4),
+        battery=torch.full((1, n), 0.8),
+        speed_ms=torch.zeros(1, n),
+        accel_ms2=torch.zeros(1, n),
+        observer_dist_m=torch.full((1,), 120.0),
+        on_path=torch.tensor([on_path], dtype=torch.bool),
+    )
+
+
+OFF = [False] * 5
+ONE = [False, True, False, False, False]
+
+
+def test_w_relay_zero_leaves_the_reward_bitwise_unchanged():
+    """It ships off, and `test_golden.py` depends on that being exact."""
+    a, b = _relay_snap(OFF), _relay_snap(ONE)
+    assert DEFAULT_WEIGHTS.w_relay == 0.0, "the relay potential must ship disabled"
+    shipped = reward(a, b, DEFAULT_WEIGHTS, gamma=0.997)
+    explicit = reward(a, b, replace(DEFAULT_WEIGHTS, w_relay=0.0), gamma=0.997)
+    assert torch.equal(shipped, explicit)
+
+
+def test_it_is_the_only_term_that_differs_between_drones():
+    """The deficit, asserted directly.
+
+    With the shipped reward two drones in the same environment differ only by
+    their energy and effort costs -- identical here, since both are stationary --
+    so the reward is flat across drones and the gradient cannot tell them apart.
+    """
+    a, b = _relay_snap(OFF), _relay_snap(ONE)
+    shipped = reward(a, b, DEFAULT_WEIGHTS, gamma=0.997)[0]
+    assert torch.allclose(shipped, shipped[0].expand_as(shipped)), (
+        "the shipped reward is identical across drones -- there is no credit channel"
+    )
+
+    with_relay = reward(a, b, replace(DEFAULT_WEIGHTS, w_relay=0.3), gamma=0.997)[0]
+    assert with_relay[1] > with_relay[0], "the drone that joined the path must be paid"
+    others = with_relay[[0, 2, 3, 4]]
+    assert torch.allclose(others, others[0].expand_as(others)), (
+        "only the drone that joined should move"
+    )
+
+
+def test_joining_then_leaving_the_path_cancels_exactly():
+    """The PBRS property, which is what makes this safe to add at all.
+
+    Devlin & Kudenko (2011) extend the invariance to the multi-agent case, so a
+    per-agent potential cannot move the equilibrium. Round trips must cancel, or
+    the term becomes a salary for flickering on and off the chain -- and
+    `chain_churn` is ~52 events per episode, so that would be farmable.
+    """
+    w = replace(DEFAULT_WEIGHTS, w_relay=0.4)
+    off, on = _relay_snap(OFF), _relay_snap(ONE)
+    out = relay_shaping(off, on, w, 1.0) + relay_shaping(on, off, w, 1.0)
+    assert torch.allclose(out, torch.zeros_like(out), atol=1e-6), float(out.abs().max())
+
+
+def test_holding_the_path_pays_only_the_discount_decay():
+    """Staying pays almost nothing per step -- the payment is at the transition.
+
+    That is the intent, not a shortcoming: joining pays once, holding costs the
+    `(gamma - 1)*Phi` decay, and the credit propagates back through GAE to the
+    actions that earned the slot. It is what makes the incentive *take a relay
+    slot and keep it* rather than *be on the path right now*.
+    """
+    w = replace(DEFAULT_WEIGHTS, w_relay=0.4)
+    on = _relay_snap(ONE)
+    join = float(relay_shaping(_relay_snap(OFF), on, w, 0.997)[0, 1])
+    hold = float(relay_shaping(on, on, w, 0.997)[0, 1])
+    assert join > 3.0, join
+    assert abs(hold) < 0.05, hold
+    assert abs(hold) < 0.02 * join
+
+
+def test_the_potential_is_zero_at_a_genuine_terminal():
+    """`Phi(terminal) = 0`, or `gamma^T Phi` survives the telescoping."""
+    w = replace(DEFAULT_WEIGHTS, w_relay=0.4)
+    on = _relay_snap(ONE)
+    terminal = torch.ones(1, dtype=torch.bool)
+    out = relay_shaping(on, on, w, 0.997, next_is_terminal=terminal)
+    assert float(out[0, 1]) < 0.0, "the potential must be dropped to 0 at a terminal"
+    assert torch.allclose(out[0, [0, 2, 3, 4]], torch.zeros(4), atol=1e-6)
+
+
+def test_a_snapshot_without_on_path_fails_loudly():
+    w = replace(DEFAULT_WEIGHTS, w_relay=0.4)
+    bare = replace_snapshot = Snapshot(
+        observed=torch.ones(1, dtype=torch.bool),
+        e2e_capacity_mbps=torch.full((1,), 40.0),
+        nearest_dist_m=torch.full((1,), 120.0),
+        best_clearance_m=torch.full((1,), 1e4),
+        battery=torch.full((1, 5), 0.8),
+        speed_ms=torch.zeros(1, 5),
+        accel_ms2=torch.zeros(1, 5),
+    )
+    with pytest.raises(ValueError, match="on_path"):
+        relay_shaping(bare, replace_snapshot, w, 0.997)
