@@ -424,8 +424,13 @@ the freeze, when there is no time. Read the tag before you argue with the entry.
   not**, and it happens to equal TR 38.901's *terrestrial* UMi LoS intercept,
   which is the neighbouring constant a transcription slip lands on. One human
   reading of the UMi-AV table closes it — [`docs/PHYSICS.md`](docs/PHYSICS.md).
-  The same pass added a `TODO(verify)` to A2A's `blockage_db = 20.0`, which had
-  never been marked and which RQ1's F1 rung rests on.
+  📏 A2A's `blockage_db = 20.0` was worked the same day and is **closed by
+  sensitivity, not by citation**: the physically-motivated value is ~40 dB
+  (median occluded ray passes 60.5 m *inside* a Frankfurt tower), but B0's
+  headline moves 59.7 → 59.5 % across a 20–40 dB sweep, because 83 % of
+  occluded chain edges are air-to-ground. `scripts/verify_blockage.py`.
+  📏 And TR 36.777 is still current: **TR 38.901 adds no aerial UE heights
+  through Rel-19 (June 2025)**, so there is nothing newer to migrate to.
 
 ---
 

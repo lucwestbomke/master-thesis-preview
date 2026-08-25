@@ -108,12 +108,41 @@ def pathloss_a2a_db(
     **40-80 m**, so the lower end sits just under that 50 m finding -- worth a
     sentence in the methodology rather than silence.
 
-    TODO(verify): `blockage_db = 20.0` is an **assumed** constant, not a measured
-    or cited one, and it was not previously marked. A blocked A2A ray at these
-    altitudes is roof-edge diffraction, whose loss depends on the Fresnel
-    parameter and realistically spans ~10-40 dB. 20 dB is a plausible mid-range
-    choice and RQ1's F1 rung rests on it, so it needs either a citation or a
-    sensitivity check before the methodology chapter quotes it.
+    ## 📏 `blockage_db = 20.0` -- assumed, physically low, and measurably harmless
+
+    Verified 2026-08-26 by `scripts/verify_blockage.py`, which regenerates all of
+    the following. It is an **assumed** constant with no citation, so it was
+    defended the other way: by showing the result does not depend on it.
+
+    **The physics says 20 dB is too low.** Occluded A2A rays in the real
+    Frankfurt geometry do not graze -- the median ray passes **60.5 m inside**
+    the obstruction (p25 10.9 m, p90 111.9 m), because at 40-80 m altitude the
+    only blockers tall enough to matter are the towers. The first Fresnel radius
+    at the median 235 m link is **2.2 m**, so a 60 m depth is ~27 Fresnel radii:
+    deep shadow, not diffraction fringe. Single knife-edge (ITU-R P.526) over
+    those depths gives a **median 43.3 dB**, and **90.4 %** of occluded A2A links
+    exceed the modelled 20 dB.
+
+    **But it governs almost nothing.** Of the occluded edges on B0's *chosen*
+    relay chain, only **16.8 % are A2A**; the other **83.2 % are drone<->MCV**,
+    which runs on the TR 36.777 NLoS branch and never touches this constant.
+    Sweeping it through B0 at stage 4 / F4 moves the headline metric by less than
+    the seed IQR:
+
+        blockage_db      20      30      40
+        mission-capable  59.7 %  60.8 %  59.5 %
+
+    ⚠️ So the honest statement for the methodology is **not** "20 dB is correct" --
+    it is "the A2A blockage penalty is an assumed 20 dB; the physically-motivated
+    value is nearer 40 dB; the reported metric is insensitive to it across that
+    range (±0.7 pp), because 83 % of occluded chain edges are air-to-ground."
+    That is a stronger position than a citation would have given.
+
+    ⛔ Do **not** change the constant on the strength of the physics alone. It
+    would re-derive every number in Blocks D-F for a sub-IQR effect, and the env
+    is frozen. Re-open only if a rung-by-rung sweep (F2/F3 are untested; F0/F1
+    never reach this code, since `binary_capacity` skips path loss entirely)
+    shows a rung where it *does* bind.
 
     `occluded` is a bool tensor broadcastable to `d_m`.
     """

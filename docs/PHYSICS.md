@@ -55,16 +55,62 @@ possible the two genuinely coincide — but it cannot be assumed.
    at 3.5 GHz rests on the `20·log₁₀(f_c)` term scaling outside the bands it was
    fitted in. Standard and defensible — but say it in Chapter 3 rather than
    leaving it implicit.
-3. ⚠️ **`blockage_db = 20.0` in the A2A model is an assumed constant that was
-   never marked.** It now carries its own `TODO(verify)`. RQ1's F1 rung rests on
-   it, and roof-edge diffraction realistically spans ~10–40 dB, so it needs a
-   citation or a sensitivity sweep before the methodology quotes it.
+3. ✅ **`blockage_db = 20.0` was worked and is closed** — see the section below.
 4. Docstring correction: the claimed "NLoS ~17 dB above LoS" measures **15.0 dB**
    at the quoted geometry (16–30 dB across the operating band).
 
 **Internal consistency, all passing:** NLoS ≥ LoS everywhere (min margin
 +1.5 dB); LoS sits 1.1–2.7 dB above FSPL across the band, rising with distance as
 a canyon model should; the hand-computed tests reproduce both branches to 1e-3.
+
+### ✅ Is TR 36.777 still the right reference? Yes — checked 2026-08-26
+
+📏 **TR 38.901 does not cover aerial UEs, through Release 19 (June 2025).** The
+Rel-19 channel-model study adds Suburban Macro, realistic handheld UT antennas,
+near-field propagation for extremely large arrays, spatial non-stationarity,
+polarization variability and ISAC — and **no aerial UE heights**. Its UMi/UMa
+remain specified for UT heights of 1.5–22.5 m, which is exactly the range this
+project operates *above*.
+
+Rel-18's UAV work item is RAN2/RAN3 in character — identification, mobility,
+broadcast — and does not supersede the Rel-15 channel model. **So TR 36.777
+remains the current 3GPP aerial path-loss reference and there is nothing newer to
+migrate to.** ⚠️ And note what that implies: 3GPP has **no air-to-air model at
+all**, which is why `pathloss_a2a_db` is a separate construction rather than a
+rung of the same standard.
+
+### 📏 The A2A blockage penalty — assumed, physically low, measurably harmless
+
+`scripts/verify_blockage.py` regenerates everything here.
+
+**The physics says 20 dB is too low.** Occluded A2A rays in the real Frankfurt
+geometry do not graze — the median ray passes **60.5 m inside** the obstruction
+(p25 10.9 m, p90 111.9 m), because at a 40–80 m altitude band the only blockers
+tall enough to matter are the towers, not the ~20 m median fabric Block B
+measured. The first Fresnel radius at the median 235 m link is **2.2 m**, so a
+60 m depth is ~27 Fresnel radii — deep shadow, not diffraction fringe. Single
+knife-edge (ITU-R P.526) over the measured depth distribution gives a **median
+43.3 dB**, and **90.4 %** of occluded A2A links exceed the modelled 20 dB.
+
+**But it governs almost nothing.** Of the occluded edges on B0's *chosen* relay
+chain, only **16.8 % are A2A** — the other **83.2 % are drone↔MCV**, which runs
+on the TR 36.777 NLoS branch and never touches this constant:
+
+| `blockage_db` | 20 | 30 | 40 |
+|---|---|---|---|
+| B0 mission-capable | 59.7 % | 60.8 % | 59.5 % |
+
+⚠️ **The honest methodology sentence is therefore not "20 dB is correct".** It is:
+*the A2A blockage penalty is an assumed 20 dB; the physically-motivated value is
+nearer 40 dB; the reported metric is insensitive to it across that range
+(±0.7 pp), because 83 % of occluded chain edges are air-to-ground.* That is a
+stronger position than a citation would have produced, because it is a statement
+about the result rather than about the input.
+
+⛔ **Do not change the constant on the physics alone.** It would re-derive every
+number in Blocks D–F for a sub-IQR effect, and the environment is frozen. Re-open
+only if a rung-by-rung sweep shows a rung where it binds — F2/F3 are untested;
+F0/F1 never reach this code at all, because `binary_capacity` skips path loss.
 
 ### ✅ A2A is a different model, deliberately, and that is correct
 
