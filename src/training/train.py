@@ -83,6 +83,13 @@ class TrainConfig:
     # Recurrent actor. The measured reason is in `SwarmActorRNN`'s docstring:
     # a feedforward actor cannot represent "I am the observer", and observer
     # tenure is where every learned policy loses to B0 by ~8x.
+    # ⚠️ Yu et al. (2022)'s agent-specific global state -- their single largest
+    # MAPPO recommendation, and the configuration this project has NOT been
+    # running. Measured deficit it addresses (`scripts/probe_credit.py`): with
+    # one global state repeated per drone, `max |V_i - V_j| = 0.000e+00` and
+    # 0.015-0.06 % of advantage variance distinguishes one drone from another, so
+    # the gradient carries no per-drone credit at all.
+    agent_specific_critic: bool = False
     recurrent: bool = False
     # ⚠️ A recurrent actor implies a recurrent CRITIC, which is the published
     # MAPPO configuration (Yu et al., 2022) and a correctness argument rather
@@ -193,7 +200,7 @@ def build(cfg: TrainConfig) -> tuple[SharedPolicyWrapper, MAPPO, CurriculumCallb
         ),
         weights=build_weights(cfg),
     )
-    env = SharedPolicyWrapper(core)
+    env = SharedPolicyWrapper(core, agent_specific_state=cfg.agent_specific_critic)
     dev = env.device
     torch.manual_seed(cfg.seed)
 
@@ -555,6 +562,13 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--entropy", type=float, default=0.0)
     ap.add_argument("--min-std", type=float, default=None, help="floor on the action std")
+    ap.add_argument(
+        "--agent-specific-critic",
+        action="store_true",
+        help="append each drone's own ego block to the critic state (Yu et al. 2022). "
+        "Without it V_i is bit-identical across drones and the gradient carries no "
+        "per-drone credit -- see scripts/probe_credit.py",
+    )
     ap.add_argument("--recurrent", action="store_true", help="GRU actor (skrl PPO_RNN)")
     ap.add_argument(
         "--ff-critic",
@@ -623,6 +637,7 @@ def main() -> None:
             learning_rate=a.lr,
             entropy_loss_scale=a.entropy,
             min_log_std=math.log(a.min_std) if a.min_std else -20.0,
+            agent_specific_critic=a.agent_specific_critic,
             recurrent=a.recurrent,
             recurrent_critic=not a.ff_critic,
             rnn_hidden=a.rnn_hidden,

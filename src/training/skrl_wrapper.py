@@ -28,8 +28,9 @@ import numpy as np
 import torch
 from skrl.envs.wrappers.torch import MultiAgentEnvWrapper
 from skrl.resources.preprocessors.torch import RunningStandardScaler
+from torch import Tensor
 
-from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv
+from ..env.core import ACTION_DIM, EGO_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv, unpack_flat
 
 # --------------------------------------------------------------------------- #
 # skrl defaults that are wrong for this project
@@ -253,7 +254,7 @@ class SwarmMultiAgentWrapper(MultiAgentEnvWrapper):
     def step(self, actions: dict[str, torch.Tensor]):
         act = torch.stack([actions[uid] for uid in self._agents], dim=1)
         obs, rew, terminated, truncated, extras = self.core.step(act)
-        self._state = obs["state"]
+        self._state, self._flat = obs["state"], obs["flat"]
         self._final_flat = extras["final_observation"]
         self._final_state = extras.get("final_state")
 
@@ -367,19 +368,20 @@ class SharedPolicyWrapper(MultiAgentEnvWrapper):
         terminated   (B,)         ->  {swarm: (B*N, 1)}   repeated per drone
     """
 
-    def __init__(self, env: BatchedSwarmEnv):
+    def __init__(self, env: BatchedSwarmEnv, agent_specific_state: bool = False):
         super().__init__(env)
         self.core = env
         self._agents = [SWARM_UID]
         self._state: torch.Tensor | None = None
+        self._flat: torch.Tensor | None = None
         self._final_flat: torch.Tensor | None = None
         self._final_state: torch.Tensor | None = None
+        self.agent_specific_state = agent_specific_state
 
         obs_space = gymnasium.spaces.Box(-np.inf, np.inf, shape=(FLAT_DIM,), dtype=np.float32)
         act_space = gymnasium.spaces.Box(-1.0, 1.0, shape=(ACTION_DIM,), dtype=np.float32)
-        st_space = gymnasium.spaces.Box(
-            -np.inf, np.inf, shape=(env.cfg.state_dim,), dtype=np.float32
-        )
+        width = env.cfg.state_dim + (EGO_DIM if agent_specific_state else 0)
+        st_space = gymnasium.spaces.Box(-np.inf, np.inf, shape=(width,), dtype=np.float32)
         self._observation_spaces = {SWARM_UID: obs_space}
         self._action_spaces = {SWARM_UID: act_space}
         self._state_spaces = {SWARM_UID: st_space}
@@ -432,18 +434,60 @@ class SharedPolicyWrapper(MultiAgentEnvWrapper):
         x = per_env if per_env.dim() > 1 else per_env.unsqueeze(-1)
         return {SWARM_UID: x.repeat_interleave(n, dim=0)}
 
+    def _critic_rows(self, global_state: torch.Tensor, flat: torch.Tensor) -> dict[str, Tensor]:
+        """The critic's input rows: global state, optionally + the drone's own ego.
+
+        ## Why the option exists, and it is a measured deficit rather than a knob
+
+        Without it the critic receives **one global state, repeat_interleaved
+        across the N drones**, so `V(s)` is bit-identical for every drone of an
+        environment -- not approximately, exactly. The reward is team-dominated,
+        so `A_i = r_i + gamma*V(s') - V(s)` is then nearly identical too.
+        Measured by `scripts/probe_credit.py`: **0.015-0.06 %** of advantage
+        variance distinguishes one drone from another, and `max |V_i - V_j|` is
+        `0.000e+00`, trained or not.
+
+        Every drone's policy gradient is therefore
+        `grad log pi(a_i | o_i) * A` with the same `A` -- each is told *the team
+        did well*, never *your action was the good one*. Role differentiation
+        cannot be learned from a signal that is constant across the agents it
+        would differentiate, which is the Block G diagnosis in one sentence.
+
+        Concatenating the drone's **own ego block** makes `V_i` a function of
+        drone `i`, which is the term the probe measures as exactly zero. This is
+        Yu et al. (2022)'s *agent-specific global state* -- their single largest
+        MAPPO recommendation -- and it is the configuration this project has not
+        been running.
+
+        ⛔ It does **not** break "never give the actor an agent index"
+        (`AGENTS.md`). That rule is about the **actor**: this is the critic, it is
+        training-only and discarded at evaluation, and the appended features are
+        the drone's own *state* -- position, velocity, battery, clearances,
+        `sees_hvt`, `on_path` -- never its identity. The construction stays
+        permutation-equivariant, so roles must still emerge.
+
+        ⚠️ The ego block is taken through `core.unpack_flat`, the sanctioned
+        inverse of the env's own packing, so the critic sees exactly the block the
+        actor does rather than a second hand-rolled slice of it.
+        """
+        rows = self._repeat(global_state)[SWARM_UID]
+        if not self.agent_specific_state:
+            return {SWARM_UID: rows}
+        ego = unpack_flat(flat)["ego"].reshape(self.num_envs, EGO_DIM)
+        return {SWARM_UID: torch.cat([rows, ego], dim=-1)}
+
     # --- interaction ------------------------------------------------------ #
 
     def reset(self) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         obs = self.core.reset()
-        self._state = obs["state"]
+        self._state, self._flat = obs["state"], obs["flat"]
         return self._rows(obs["flat"]), {SWARM_UID: {}}
 
     def step(self, actions: dict[str, torch.Tensor]):
         b, n = self.core.cfg.num_envs, self.core.cfg.num_drones
         act = actions[SWARM_UID].view(b, n, ACTION_DIM)
         obs, rew, terminated, truncated, extras = self.core.step(act)
-        self._state = obs["state"]
+        self._state, self._flat = obs["state"], obs["flat"]
         self._final_flat = extras["final_observation"]
         self._final_state = extras.get("final_state")
         return (
@@ -455,7 +499,7 @@ class SharedPolicyWrapper(MultiAgentEnvWrapper):
         )
 
     def state(self) -> dict[str, torch.Tensor | None]:
-        return self._repeat(self._state)
+        return self._critic_rows(self._state, self._flat)
 
     def final_observations(self) -> dict[str, torch.Tensor]:
         """The pre-reset observation -- see `SwarmMultiAgentWrapper` for why."""
@@ -471,7 +515,10 @@ class SharedPolicyWrapper(MultiAgentEnvWrapper):
                 "takes the value of a fresh episode's opening state and "
                 "time_limit_bootstrap=True silently does the wrong thing."
             )
-        return self._repeat(self._final_state)
+        # ⚠️ Paired with the PRE-reset observation, not the post-reset one: the
+        # bootstrap values the state the episode actually ended in, and the ego
+        # half has to come from the same instant as the global half.
+        return self._critic_rows(self._final_state, self._final_flat)
 
     def render(self, *args: Any, **kwargs: Any) -> None:
         raise NotImplementedError("Use scripts/view_episode.py for visualization")

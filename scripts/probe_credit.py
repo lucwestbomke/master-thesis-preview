@@ -105,6 +105,11 @@ def main() -> None:
     ap.add_argument("--rollouts", type=int, default=32)
     ap.add_argument("--stage", type=int, default=4)
     ap.add_argument("--checkpoint", type=Path, default=None)
+    ap.add_argument(
+        "--agent-specific-critic",
+        action="store_true",
+        help="Yu et al. (2022) agent-specific global state -- the intervention this probe motivates",
+    )
     ap.add_argument("--no-buildings", action="store_true", help="tests only; not a rung")
     a = ap.parse_args()
 
@@ -117,6 +122,7 @@ def main() -> None:
         env_steps=a.rollouts * a.num_envs,
         stage_weights=tuple(1.0 if i == a.stage - 1 else 0.0 for i in range(4)),
         no_buildings=a.no_buildings,
+        agent_specific_critic=a.agent_specific_critic,
     )
     env, agent, curriculum = build(cfg)
     agent.init()
@@ -182,7 +188,10 @@ def main() -> None:
     rew = get("rewards").view(t, b, n)
     val = values.view(t, b, n)
 
-    print(f"\nrollout {t} x {b} envs x {n} drones, arch={a.arch}, stage={a.stage}\n")
+    print(
+        f"\nrollout {t} x {b} envs x {n} drones, arch={a.arch}, stage={a.stage}, "
+        f"agent_specific_critic={a.agent_specific_critic}\n"
+    )
     print("variance that lives BETWEEN DRONES at the same instant")
     print("  (0 = the signal cannot tell one drone from another)\n")
     print(f"  advantage : {_share(adv):8.5f}")

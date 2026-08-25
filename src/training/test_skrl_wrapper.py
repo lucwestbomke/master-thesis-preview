@@ -23,8 +23,22 @@ from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
 from skrl.multi_agents.torch.mappo import MAPPO
 from torch import nn
 
-from ..env.core import ACTION_DIM, FLAT_DIM, GAMMA, BatchedSwarmEnv, EnvConfig
-from .skrl_wrapper import MAPPO_OVERRIDES, SwarmMultiAgentWrapper, mappo_cfg
+from ..env.core import (
+    ACTION_DIM,
+    EGO_DIM,
+    FLAT_DIM,
+    GAMMA,
+    BatchedSwarmEnv,
+    EnvConfig,
+    unpack_flat,
+)
+from .skrl_wrapper import (
+    MAPPO_OVERRIDES,
+    SWARM_UID,
+    SharedPolicyWrapper,
+    SwarmMultiAgentWrapper,
+    mappo_cfg,
+)
 
 FAST = {"no_buildings": True, "compile_occlusion": False, "stage_weights": (1.0, 0.0, 0.0, 0.0)}
 
@@ -237,3 +251,82 @@ def test_final_states_says_why_when_the_env_is_not_emitting_them():
     env.step({uid: torch.zeros(2, ACTION_DIM, device=env.device) for uid in env.agents})
     with pytest.raises(RuntimeError, match="training_extras"):
         env.final_states()
+
+
+# --- agent-specific critic state (Yu et al. 2022) -------------------------- #
+
+
+def _shared_env(agent_specific: bool, n: int = 5):
+    core = BatchedSwarmEnv(
+        EnvConfig(
+            num_envs=6,
+            num_drones=n,
+            device="cpu",
+            no_buildings=True,
+            training_extras=True,
+            auto_reset=True,
+        )
+    )
+    return SharedPolicyWrapper(core, agent_specific_state=agent_specific)
+
+
+def test_agent_specific_state_is_off_by_default():
+    """Default must stay byte-identical: every reported number used it."""
+    env = _shared_env(agent_specific=False)
+    assert env.agent_specific_state is False
+    assert env.state_spaces[SWARM_UID].shape[0] == env.core.cfg.state_dim
+
+
+def test_agent_specific_state_appends_exactly_the_ego_block():
+    env = _shared_env(agent_specific=True)
+    n = env.core.cfg.num_drones
+    assert env.state_spaces[SWARM_UID].shape[0] == env.core.cfg.state_dim + EGO_DIM
+
+    obs, _ = env.reset()
+    rows = env.state()[SWARM_UID]
+    assert rows.shape == (env.num_envs, env.core.cfg.state_dim + EGO_DIM)
+
+    # The appended half IS the ego block the actor reads, taken through the
+    # env's own `unpack_flat` -- not a second hand-rolled slice of it.
+    ego = unpack_flat(obs[SWARM_UID])["ego"]
+    assert torch.equal(rows[:, env.core.cfg.state_dim :], ego)
+    # ...and the global half is still the same state repeated per drone.
+    glob = rows[:, : env.core.cfg.state_dim].view(env.core.cfg.num_envs, n, -1)
+    assert torch.equal(glob[:, 0], glob[:, -1])
+
+
+def test_without_it_the_critic_cannot_tell_two_drones_apart():
+    """The measured deficit, pinned so it cannot be reintroduced silently.
+
+    `scripts/probe_credit.py` measures `max |V_i - V_j| = 0.000e+00` and
+    0.015-0.06 % of advantage variance distinguishing drones. That is not a
+    tuning artefact -- it is forced by handing the critic one state repeated
+    `N` times, and this asserts the mechanism directly.
+    """
+    n = 5
+    off, on = _shared_env(False, n), _shared_env(True, n)
+    off.reset()
+    on.reset()
+
+    rows_off = off.state()[SWARM_UID].view(off.core.cfg.num_envs, n, -1)
+    assert torch.equal(rows_off[:, 0], rows_off[:, 1]), (
+        "the critic's rows are identical across drones -- V_i cannot differ"
+    )
+    rows_on = on.state()[SWARM_UID].view(on.core.cfg.num_envs, n, -1)
+    assert not torch.equal(rows_on[:, 0], rows_on[:, 1])
+
+
+def test_final_states_carry_the_same_width_and_the_pre_reset_ego():
+    """The truncation bootstrap needs both halves from the SAME instant."""
+    env = _shared_env(agent_specific=True)
+    env.reset()
+    actions = {SWARM_UID: torch.zeros(env.num_envs, ACTION_DIM)}
+    _obs, _rew, _term, _trunc, extras = env.step(actions)
+
+    final = env.final_states()[SWARM_UID]
+    assert final.shape == (env.num_envs, env.core.cfg.state_dim + EGO_DIM)
+    # `extras` keeps the env's own (B, N, 108) shape; the wrapper's rows are B*N.
+    ego = unpack_flat(extras[SWARM_UID]["final_observation"])["ego"].reshape(env.num_envs, EGO_DIM)
+    assert torch.equal(final[:, env.core.cfg.state_dim :], ego), (
+        "final_states must pair the PRE-reset ego with the pre-reset global state"
+    )
