@@ -95,6 +95,20 @@ class RolloutMetrics:
     role_entropy: Tensor  # normalised entropy of observer identity, 0 = one drone owns it
     relay_entropy: Tensor  # same for chain membership
     standoff_gap_m: Tensor  # median drone-HVT range minus the closest drone's
+    #: (n_episodes,) mean range of the drone actually HOLDING the sightline,
+    #: over observing steps. ⚠️ **This is the number the Block G diagnosis rests
+    #: on** -- B0 parks its observer at ~79 m and every learned policy loiters at
+    #: ~291 m -- and until now it existed only as a one-off measurement rather
+    #: than a reported metric. `nan` on an episode that never observed.
+    observer_range_m: Tensor
+    #: The last third of the episode, where `MODELS.md` says the difficulty is
+    #: ("capable decays 84 % -> 35 % as the HVT drives out ... report the second
+    #: half separately") and which nothing in Block G had ever reported. The
+    #: coordination-trap hypothesis predicts the swarm is fine early and fails
+    #: late, because the chain only has to extend once the HVT is far out.
+    capable_last_third: Tensor
+    observed_last_third: Tensor
+    observer_range_last_third: Tensor
 
     # ⚠️ `standoff_gap_m` MUST be read together with `role_entropy`, never alone.
     # A large gap means either "one drone went in and the rest held back" or
@@ -150,6 +164,10 @@ class RolloutMetrics:
             "fail_no_observation",
             "fail_link",
             "observer_share_max",
+            "observer_range_m",
+            "capable_last_third",
+            "observed_last_third",
+            "observer_range_last_third",
             "role_entropy",
             "relay_entropy",
             "standoff_gap_m",
@@ -251,6 +269,11 @@ def rollout(
     obs_count = torch.zeros(b, n, device=dev)
     path_count = torch.zeros(b, n, device=dev)
     standoff_sum = torch.zeros(b, device=dev)
+    range_sum = torch.zeros(b, device=dev)
+    range_late = torch.zeros(b, device=dev)
+    covered_late = torch.zeros(b, device=dev)
+    capable_late = torch.zeros(b, device=dev)
+    observed_late = torch.zeros(b, device=dev)
     seen_comp = torch.zeros(b, 1 << N_MAX, device=dev)
     pow2 = (2 ** torch.arange(n, device=dev)).float()
 
@@ -366,6 +389,16 @@ def rollout(
         # uniformly standing-off swarm shows a small one.
         d_hvt = (env.drone_pos - env.hvt_pos.unsqueeze(1)).norm(dim=-1)
         standoff_sum += d_hvt.median(dim=-1).values - d_hvt.min(dim=-1).values
+        # The range of the drone that actually holds the ray -- B0 79 m, learned
+        # ~291 m. Accumulated only over steps where somebody sees, so it is the
+        # observer's stand-off and not an average over blind steps.
+        obs_range = d_hvt.gather(1, cur.clamp_min(0).unsqueeze(-1)).squeeze(-1)
+        range_sum += obs_range * covered.float()
+        if t >= late_from:
+            capable_late += capable
+            observed_late += seen
+            range_late += obs_range * covered.float()
+            covered_late += covered.float()
 
         if on_reset is not None:
             # Unconditional: a masked reset is a no-op, and `if done.any()`
@@ -390,6 +423,15 @@ def rollout(
         return entropy / math.log(n)
 
     obs_total = obs_count.sum(dim=-1)
+
+    def _mean_where(total: Tensor, count: Tensor) -> Tensor:
+        """`nan` rather than 0 where nothing was observed -- `summary()` drops
+        non-finite entries, so an episode that never saw the target contributes
+        nothing instead of dragging the mean toward zero."""
+        return torch.where(
+            count > 0, total / count.clamp_min(1.0), torch.full_like(total, float("nan"))
+        )
+
     return RolloutMetrics(
         mission_capable=(acc["capable"] / t_f).cpu(),
         observed=(acc["observed"] / t_f).cpu(),
@@ -424,6 +466,10 @@ def rollout(
         role_entropy=_norm_entropy(obs_count).cpu(),
         relay_entropy=_norm_entropy(path_count).cpu(),
         standoff_gap_m=(standoff_sum / t_f).cpu(),
+        observer_range_m=_mean_where(range_sum, obs_total).cpu(),
+        capable_last_third=(capable_late / late_f).cpu(),
+        observed_last_third=(observed_late / late_f).cpu(),
+        observer_range_last_third=_mean_where(range_late, covered_late).cpu(),
         meta={"steps": steps, "num_envs": b, "num_drones": n, "alt_ceiling_m": ALT_MAX_M},
     )
 

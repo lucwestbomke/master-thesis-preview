@@ -67,6 +67,12 @@ REPORT = (
     # means one drone went in and the rest held back to relay.
     "role_entropy",
     "standoff_gap_m",
+    # ⚠️ The number the Block G diagnosis rests on: B0 parks its observer at
+    # ~79 m, every learned policy loiters at ~291 m, and everything else
+    # (observed, tenure, hop count) is a view of that one gap.
+    "observer_range_m",
+    "capable_last_third",
+    "observer_range_last_third",
 )
 
 

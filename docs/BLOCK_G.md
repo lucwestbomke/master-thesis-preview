@@ -656,6 +656,87 @@ real best-known number was ~41 %, not 45 %.**
 in another — roughly one catastrophic seed in five, not a smooth spread. Five
 seeds is barely enough to place a median. Diagnosing this is now high priority.
 
+### 📏 G9 / Gate 2 — the credit channel opened, the behaviour did not move
+
+The intervention `scripts/probe_credit.py` motivated. GNN, `deep`, F4, stage 4,
+train split, 5 seeds, 12 M steps; control is `g8-ff-shipped`, same cadence and
+shaping, so `--w-relay` is the only variable.
+
+| arm | capable | worst seed | observed | **hop \| obs** | tenure |
+|---|---|---|---|---|---|
+| control | 40.7 % [3.2] | 29.6 | 64.9 % | **1.91** | 43.2 |
+| `w_relay 0.2` | 42.4 % [1.9] | 25.2 | 65.8 % | **1.93** | 44.5 |
+| `w_relay 0.5` | 39.7 % [1.8] | 34.3 | 61.5 % | **1.88** | 39.7 |
+| `w_relay 0.5` + agent-specific critic | 34.1 % [5.9] | **0.3** | 55.9 % | **1.89** | 37.6 |
+| B0 | 57.3 % [3.9] | | 92.8 % | **2.26** | 294.7 |
+
+⛔ **All three arms fail.** The rule was `hop|obs ≥ 2.0` and `capable ≥ 40.7 %`;
+`hop|obs` measured **1.88–1.93 against the control's 1.91**. The per-drone
+advantage signal was raised **71×** (0.00041 → 0.02931) and the behaviour did not
+move at all.
+
+Two secondary readings. **More `w_relay` is worse** (42.4 → 39.7), so the term is
+degrading the objective's learning signal before it changes the policy. And the
+**agent-specific critic actively hurt** — 39.7 → 34.1 with one seed collapsing to
+0.3 % and a return of −278. ⛔ Drop it: `probe_credit.py` already said it was
+variance reduction rather than credit, and it bought instability instead.
+
+✅ **The kill condition did not fire.** `standoff_gap_m` is 322–366 m, so the
+swarm did **not** cluster onto the HVT. `REWARD.md`'s objection to per-drone
+potentials is not what happened here — this is a clean null, not the predicted
+failure.
+
+### ☠️ `hop | observed` was the wrong primary readout, and this is why
+
+Every configuration this block has measured, on the same statistic:
+
+| | hop \| obs | | hop \| obs |
+|---|---|---|---|
+| random | **1.83** | + `w_hold` | 1.87 |
+| MLP | 1.86 | + `w_relay 0.2` | 1.93 |
+| DeepSets | 1.88 | + `w_relay 0.5` | 1.88 |
+| GNN control | 1.91 | + `w_relay` + asc | 1.89 |
+| + recurrence | 1.89 | **B0** | **2.26** |
+
+**Six interventions, a 1.86–1.93 range, and random sits at 1.83.** A statistic
+that invariant is not measuring the thing it was chosen to measure.
+
+⚠️ **A chain's hop count is set by where the OBSERVER stands, not by whether
+anyone takes a relay role.** Against the measured `R` = 524 m, with the HVT ~1 km
+out late in an episode:
+
+* B0's observer sits 79 m from the HVT, so **~920 m from the MCV** → ~2–3 hops.
+* The learned observer sits 291 m from the HVT, so **~710 m from the MCV** → ~2 hops.
+
+The learned swarm builds exactly the chain its observer position requires. There
+is **no separate relay-role failure to fix** — the hop deficit is a *shadow* of
+the stand-off deficit, and `w_relay` was aimed at a role that was never missing.
+
+**So the diagnosis collapses to one failure, not two: the observer does not
+close.** `observed` (66.5 % vs 92.8 %), tenure (47 vs 295) and hop count
+(1.91 vs 2.26) are three views of it.
+
+### 🔍 Why closing is a coordination trap, and why no single-agent gradient escapes it
+
+To hold a sightline from 79 m the observer must be ~920 m from the MCV, which is
+beyond its own link range — so closing **only pays if the rest of the swarm has
+already extended the chain outward to meet it**. But a relay drone gains nothing
+by moving out until the observer is out: its `on_path` bit is already satisfied
+by the shorter chain it is currently carrying.
+
+**Every unilateral deviation is worse than the joint move.** That is a local
+optimum requiring *coordinated* exploration, and it explains the whole pattern of
+nulls in this block: recurrence, `w_hold`, `w_relay` and the agent-specific
+critic are all instruments that change one agent's incentive or capacity, and
+none of them can move a formation that has to move together.
+
+⚠️ It also predicts **where** the failure lives: the chain only needs to extend as
+the HVT drives out, so the swarm should be fine early in an episode and fail
+late. `MODELS.md` already records `capable` decaying 84 % → 35 % across an
+episode and asks for the second half to be reported separately — **and nothing in
+this block has ever reported it.** That measurement gap is the next thing to
+close, before any fifth intervention.
+
 ### 📏 G5 / stage B — RQ2's first eval-split answer
 
 Each architecture at **its own** equal-budget winner, eval split, 5 seeds:

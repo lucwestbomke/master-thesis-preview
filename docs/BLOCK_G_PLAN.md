@@ -49,7 +49,31 @@ reward and no per-drone role signal **no drone can afford to be the one that goe
 in.** A coordination trap. The deficit is **role emergence**; observer tenure and
 the missing chain are its symptoms.
 
-⛔ Both Gate 1 candidates failed their pre-declared rules — recurrence
+⛔ **Four interventions, four nulls** — recurrence, `w_hold`, the per-drone
+`w_relay` potential, and the agent-specific critic (which actively hurt). All
+pre-declared, all at 5 seeds, all in `DECISIONS.md`.
+
+☠️ **And `hop | observed`, the statistic three of them were judged on, measures
+geometry.** Random 1.83, every learned policy 1.86–1.93, B0 2.26 — hop count is
+set by where the *observer* stands against `R` = 524 m. **There is no separate
+relay-role failure.** `observed`, tenure and hop count are three views of one
+thing: the observer does not close.
+
+🔍 **Closing is a coordination trap.** Holding a sightline from 79 m puts the
+observer ~920 m from the MCV, beyond its own link range — so it only pays once
+the rest of the swarm has extended the chain to meet it, and a relay gains
+nothing by moving out first. **Every unilateral deviation is worse than the joint
+move**, which is why four instruments that each change *one* agent's incentive or
+capacity all returned nulls.
+
+📏 **Newly measured (stage 4, B0/random reference):** B0's observer holds
+**87.3 m [0.5]** — and **80.2 m** in the last third, so it closes and *stays*
+closed. Random sits at 319 m. Even B0's `capable` falls to **40 %** in the final
+third against 56.4 % overall, confirming `MODELS.md`'s "difficulty is
+concentrated late" — a split this block had never reported.
+
+⛔ The original Gate 1 line, kept for the record: both candidates failed their
+pre-declared rules — recurrence
 **dropped** (−1.05 pp, tenure 36.8 against a required 95, seed IQR *widened*
 4.7 → 6.9), `w_hold` **null** (+1.65 pp on a 6.8 IQR). Recorded in
 `DECISIONS.md`.

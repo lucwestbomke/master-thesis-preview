@@ -89,9 +89,18 @@ per-drone role signal, **no drone can afford to be the one that goes in.** A
 coordination trap: the deficit is **role emergence**, and observer tenure
 (47 vs 295) and the missing chain are its two symptoms.
 
-⛔ **Recurrence was tested against this and dropped** (2×2, 5 seeds, pre-declared
-rule): **−1.05 pp**, tenure 36.8 against a required 95, and it *widened* the seed
-spread. `w_hold` is a null. Both recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+⛔ **Four interventions have now been tested against this and all four are
+nulls** — recurrence (−1.05 pp), `w_hold`, the per-drone `w_relay` potential, and
+Yu et al.'s agent-specific critic (which actively hurt). Each was pre-declared and
+run at 5 seeds; all are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+📏 **And `hop | observed` — the statistic three of those were judged on — measures
+geometry, not behaviour.** Random 1.83, every learned policy 1.86–1.93, B0 2.26:
+hop count is set by where the *observer* stands against `R` = 524 m, so there is
+**no separate relay-role failure**. `observed`, tenure and hop count are three
+views of one failure — **the observer does not close** — and closing is a
+coordination trap: it only pays once the rest of the swarm has extended the chain
+to meet it, so every unilateral deviation is worse than the joint move.
 
 Sweep findings worth carrying: `deep` (rollout 64) wins and `wide` **quadrupled**
 the seed spread it was built to shrink; **MLP → DeepSets is +6.9 pp and robust**

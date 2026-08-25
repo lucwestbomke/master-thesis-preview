@@ -31,6 +31,54 @@ in the git log; commit messages are long on purpose.
 
 ## Design directions abandoned
 
+### ⛔ Per-drone potentials as the fix for role emergence — the channel opened, nothing moved
+
+**Proposed** on a measured deficit rather than a hunch. `scripts/probe_credit.py`
+showed the learner had **no per-drone credit channel at all**: the critic is
+handed one global state repeated per drone, so `max |V_i - V_j| = 0.000e+00`, and
+0.015–0.06 % of advantage variance distinguished one drone from another. Every
+drone's gradient was `grad log pi(a_i|o_i) * A` with the same `A`.
+
+`w_relay` — a per-drone potential on `on_path` — raised that **71×**
+(0.00041 → 0.02931). The behaviour did not move: `hop | observed` measured
+**1.88–1.93 against a control of 1.91**, at 5 seeds. More of the term was worse
+(42.4 % → 39.7 %), and the agent-specific critic paired with it was worse still
+(34.1 %, one seed collapsing to 0.3 %).
+
+✅ Both stay in the code, off by default (`w_relay = 0.0`,
+`agent_specific_state=False`), because the probe that motivated them is the
+reusable part and the flags are how it gets re-run.
+
+**What it rules out, and the ruling-out is the value.** Missing per-drone credit
+was real and is now supplied. Roles still do not emerge, so credit assignment was
+**necessary-looking but not sufficient**, and the search moves elsewhere.
+
+### ☠️ `hop | observed` as a measure of relay-role emergence — it measures geometry
+
+Used as Gate 2's primary readout, and that was a mistake worth recording because
+the statistic looks behavioural and is not.
+
+📏 Measured across every configuration in Block G: random **1.83**, MLP 1.86,
+DeepSets 1.88, GNN 1.91, +recurrence 1.89, +`w_hold` 1.87, +`w_relay` 1.88–1.93,
+B0 **2.26**. Six interventions inside a 1.86–1.93 band, with random at the bottom
+of it.
+
+**A chain's hop count is set by where the observer stands.** Against `R` = 524 m
+with the HVT ~1 km out: B0's observer at 79 m from the HVT is ~920 m from the MCV
+(~2–3 hops); the learned observer at 291 m is ~710 m from the MCV (~2 hops). The
+swarm builds exactly the chain its observer position requires.
+
+⚠️ **Consequence for the diagnosis.** There is no separate relay-role failure.
+`observed`, observer tenure and hop count are three views of **one** failure: the
+observer does not close. `BLOCK_G.md`'s earlier framing of "two roles, neither
+emerging" is corrected there.
+
+⚠️ **Consequence for RQ3.** Hop count and chain composition are reported as
+behavioural signatures. They are **confounded with observer stand-off**, and must
+be reported conditioned on it — or reported as what they are, a consequence of
+where the sensor sits.
+
+
 ### ⛔ Recurrence as the fix for observer tenure — killed on its own pre-declared rule
 
 **Proposed** on a mechanism that still stands: a stateless policy provably cannot
