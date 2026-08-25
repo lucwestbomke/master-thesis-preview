@@ -317,6 +317,17 @@ def main() -> None:
     rows = [r for r in load_summary() if r["split"] == "train"]
     if not rows:
         raise SystemExit("no stage A results in the summary -- run without --stage-b first")
+    # ⚠️ Stage B is resumable in the same sense stage A is, and for the same
+    # reason: `train_one` skips an existing checkpoint, but `append` used to run
+    # unconditionally, so an interrupted stage B that was re-run wrote a SECOND
+    # eval row for every seed it had already scored. The duplicates then entered
+    # the median and IQR silently -- measured once, as an `n = 9` where 5 seeds
+    # were requested. Guard the write, exactly as stage A guards it.
+    done = {
+        (r["arch"], r["cadence"], r["shaping"], r["seed"])
+        for r in load_summary()
+        if r["split"] == "eval"
+    }
     for arch in architectures:
         ranked = report([r for r in rows if r["arch"] == arch])
         if not ranked:
@@ -326,6 +337,8 @@ def main() -> None:
         shaping = dict(next(s for name, s in SHAPINGS if name == cell[2]))
         print(f"\n{arch}: winner {cell[1]}/{cell[2]} at {median * 100:.1f} % [{iqr * 100:.1f}]")
         for seed in range(a.final_seeds):
+            if (arch, cadence.name, cell[2], seed) in done:
+                continue
             name = run_name(arch, cadence.name, cell[2], seed)
             print(f"  {name}", flush=True)
             train_one(a, arch, cadence, cell[2], shaping, seed)
