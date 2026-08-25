@@ -212,25 +212,93 @@ Two things the negative bought, and they are worth more than the gate:
    designated failure-attribution metric and it is not usable as defined — see
    `DECISIONS.md`.
 
-### Gate 2 — the role-emergence probe
+## 4b. Gate 2 — role emergence, declared 2026-08-25 before the runs
 
-The reframe above is a hypothesis with one cheap, PBRS-safe test. `REWARD.md`
-rules out per-drone potentials on the grounds that they cluster the swarm onto the
-HVT — but that was **reasoned, not measured**, and Devlin & Kudenko (2011) extend
-the PBRS invariance to the multi-agent case, so a per-agent `Φ_i` cannot move the
-equilibrium either.
+### What changed the design
 
-Declare the rule before running it, as always. Draft — to be fixed before the
-first run:
+The Gate 1 negative said the deficit was role emergence. `scripts/probe_credit.py`
+then measured **why nothing had touched it**: the critic is handed one global
+state repeated per drone, so `max |V_i - V_j|` is exactly `0.000e+00`, the reward
+is team-dominated, and 📏 **0.015-0.06 % of advantage variance distinguishes one
+drone from another**. Every drone's gradient is `grad log pi(a_i|o_i) * A` with
+the *same* `A`. Role differentiation cannot be learned from a signal that is
+constant across the agents it would differentiate — which retro-explains every
+null in this block.
 
-> Per-drone `Φ_i` giving each drone its *own* approach/observe potential, crossed
-> against the shipped team `Φ`, GNN, `deep`, 5 seeds, train split.
-> * **keep** if `hop_mean | observed` ≥ 2.1 (i.e. the chain becomes non-random)
->   **and** capable ≥ 41.2 %
-> * **kill** if the swarm clusters — `nearest_dist_m` falls while `hop_mean` does
->   not rise, which is exactly the failure `REWARD.md` predicts
-> * ⚠️ report `observer_dist_m` spread across drones: role emergence should show
->   as **one** drone close and the rest back, not five at the same radius
+Two interventions were built against it, and the probe already separated them:
+
+| | value between-drone | **advantage between-drone** |
+|---|---|---|
+| shipped | 0.00000 | **0.00041** |
+| `--agent-specific-critic` | **0.17527** | 0.00042 |
+| `--w-relay 0.2` | 0.00000 | **0.00527** (13x) |
+| `--w-relay 0.5` | 0.00000 | **0.02931** (71x) |
+
+⚠️ **The agent-specific critic opens the value channel and does not reach the
+gradient.** `V_i(s_t)` is a baseline — it does not depend on `a_t` — and the `V`
+half of `delta_i - delta_j` is a potential in `(V_i - V_j)` that telescopes away.
+That is exactly why COMA uses a *counterfactual* baseline rather than a per-agent
+value function. It ships, because it may become credit once trained through the
+bootstrap term `gamma*V_i(s_{t+1})`, but it is the **weaker** arm.
+
+`w_relay` reaches it, because `Phi_i` enters `r_i` and `s'` depends on `a_i`.
+📏 Note the GAE attenuation: reward 0.264 → advantage 0.029, ~9x, consistent with
+`lambda = 0.95`'s ~19 effective steps. **"PBRS-safe so any scale works" is true of
+the optimum and false of the learning signal.**
+
+### The runs
+
+```bash
+BASE="--fidelity F4 --arch gnn --num-envs 4096 --rollouts 64 --mini-batches 32 \
+      --env-steps 12000000 --boundaries 0.10 0.20 0.35 --min-std 0.2 --device cuda"
+
+for s in 0 1 2 3 4; do
+  uv run python -m src.training.train $BASE --seed $s --w-relay 0.2 --name g9-relay02-s$s
+  uv run python -m src.training.train $BASE --seed $s --w-relay 0.5 --name g9-relay05-s$s
+  uv run python -m src.training.train $BASE --seed $s --w-relay 0.5 --agent-specific-critic \
+      --name g9-relay05-asc-s$s
+done
+
+OUT="--device cuda --train-routes --num-envs 128 --out results/g9_gate2.jsonl"
+for c in relay02 relay05 relay05-asc; do
+  uv run python scripts/eval_policy.py runs/g9-$c-s*/checkpoint.pt --group "$c" $OUT
+done
+```
+
+Control is **`g8-ff-shipped` at 40.7 %**, already run — same cadence, same
+shaping, same seeds, so `--w-relay` is the only variable.
+
+### The rule
+
+**Primary readout is `hop_mean | observed`**, not `mission_capable`. 📏 The
+measured deficit is that conditioned on observing, learned chain structure is
+indistinguishable from random's — **1.86-1.91 hops against random's 1.83**, with
+B0 at **2.26**. That is the number the intervention is aimed at, and
+`mission_capable` is downstream of it.
+
+| | keep | kill |
+|---|---|---|
+| `w_relay` | `hop_mean \| observed` ≥ **2.0** *and* `mission_capable` ≥ **40.7 %** (no worse than control) | see the clustering condition below |
+| more `w_relay` | 0.5 beats 0.2 on the primary readout | 0.5 is worse — the term is overwhelming the objective's *learning signal*, not its optimum |
+| `--agent-specific-critic` | adds ≥ 3 pp on top of the same `w_relay` | within IQR — drop it, it was variance reduction |
+
+⛔ **The kill condition, and it is `REWARD.md`'s own prediction.** If
+`nearest_dist_m` falls while `hop_mean | observed` does **not** rise, the swarm
+has clustered onto the HVT — which is precisely what `REWARD.md` says per-drone
+potentials do. That would mean the objection was right and `on_path` is not the
+exception it was argued to be. Record it as such rather than re-tuning around it.
+
+Also report, because they are what a role *looks like* and nothing else in this
+block could see one:
+
+* `role_entropy` — 0 = one drone owns the observer role, 1 = all equal.
+  📏 B0 **0.0**, learned **0.2**, random **0.5**.
+* `relay_entropy` — the same for chain membership. **This is the one that should
+  move**; the observer role already partly emerges and the relay role does not.
+* `standoff_gap_m` — ⚠️ never read alone. 📏 B0 **88.6**, learned **34.1**,
+  random **163.7**: a scattered policy scores the *largest* gap by accident.
+
+⚠️ Judge on the **worst seed**, as always in this block, and on `>= 5` seeds.
 
 ## 5. ⛔ Stopping rule — 2026-12-31
 
@@ -252,7 +320,7 @@ None of these depend on Gate 1.
 |---|---|---|
 | ⚠️ **Close both `TODO(verify)` sets** | see §7 — everything downstream re-derives if wrong | Sep |
 | Diagnose the seed spread | 📏 60–78 % over five stage-1 runs, bimodal, undiagnosed. Every tuning decision is read through it | Sep |
-| **Gate 2 — the per-drone `Φ_i` probe** | Gate 1's reframe says the deficit is role emergence; this is its cheapest direct test (§4) | **Sep** |
+| **Gate 2 — `w_relay`, the per-drone relay potential** | 📏 the only intervention that reaches the per-drone gradient (§4b). Ready to run | **now** |
 | `Φ_link` chain-clearance term | Gate 1 said yes — 📏 conditioned on observing, learned chains are *random* | Sep |
 | Fix `chain_occluded` to a per-edge rate | ☠️ it confounds with hop count and RQ1 depends on it | Sep |
 | Measure, then 🔒 **freeze**, the curriculum schedule | 🔧 `(0.15, 0.35, 0.60)` + 20 % mix is provisional; RQ1 needs it identical across rungs | Oct |

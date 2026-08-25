@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
 from ..env.core import STAGES
+from . import train as train_module
 from .curriculum import CurriculumSchedule
 from .skrl_wrapper import SWARM_UID
 from .train import TrainConfig, build, train
@@ -101,3 +103,47 @@ def test_only_the_safe_reward_knobs_are_reachable_from_the_trainer():
     # the pinned ones are untouched by any trainer flag
     for name in ("mission", "idle", "energy", "effort"):
         assert getattr(moved, name) == getattr(DEFAULT_WEIGHTS, name)
+
+
+def test_every_reward_knob_reachable_from_TrainConfig_has_a_cli_flag():
+    """A config field with no `--flag` is invisible, and fails at the wrong layer.
+
+    `--w-relay` shipped with its `TrainConfig` field, its `build_weights` wiring
+    and its `TrainConfig(...)` call site all present, and **no `add_argument`** --
+    so `train.py` accepted the flag nowhere while every unit test passed. The
+    failure surfaced on a GPU box as `unrecognized arguments`, one command into a
+    5-seed sweep.
+
+    This walks the parser instead of trusting it: every reward knob
+    `build_weights` can move must be settable from the command line, because a
+    knob that cannot be set from the command line cannot be swept, and a sweep is
+    the only way any of them get used.
+    """
+    import argparse
+    from unittest.mock import patch
+
+    captured: dict[str, argparse.ArgumentParser] = {}
+
+    def grab(self, *a, **k):
+        captured["parser"] = self
+        raise SystemExit(0)  # stop before the run starts
+
+    with patch.object(argparse.ArgumentParser, "parse_args", grab), pytest.raises(SystemExit):
+        train_module.main()
+    flags = {action.dest for action in captured["parser"]._actions}
+
+    # The knobs `build_weights` reads off the config, and what they are called on
+    # the command line where the two differ.
+    knobs = {
+        "tau_clearance_m": "tau_clearance",
+        "tau_capacity_mbps": "tau_capacity",
+        "potential_scale": "potential_scale",
+        "d_ref_m": "d_ref",
+        "w_hold": "w_hold",
+        "d_hold_m": "d_hold",
+        "w_relay": "w_relay",
+        "lambda_var": "lambda_var",
+    }
+    for field, flag in knobs.items():
+        assert hasattr(TrainConfig(), field), f"TrainConfig lost {field}"
+        assert flag in flags, f"TrainConfig.{field} has no --{flag.replace('_', '-')} flag"

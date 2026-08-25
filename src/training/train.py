@@ -607,6 +607,13 @@ def main() -> None:
     ap.add_argument(
         "--d-hold", type=float, default=None, help="range scale for the hold factor (m)"
     )
+    ap.add_argument(
+        "--w-relay",
+        type=float,
+        default=None,
+        help="per-drone relay potential; 0 = shipped. 0.2-0.5 is the range to test -- "
+        "the only reward term that reaches the per-drone gradient (scripts/probe_credit.py)",
+    )
     ap.add_argument("--lambda-var", type=float, default=None)
     ap.add_argument("--log-every", type=int, default=20)
     ap.add_argument("--checkpoint-every", type=int, default=0, help="iterations; 0 = final only")
