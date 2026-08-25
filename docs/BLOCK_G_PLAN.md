@@ -131,15 +131,39 @@ interaction is itself informative (see §4).
 ### A3. Score through the harness B0 went through
 
 ```bash
+OUT="--device cuda --train-routes --num-envs 128 --out results/g8_gate1.jsonl"
+
 for c in ff-shipped ff-hold rnn-shipped rnn-hold; do
-  uv run python scripts/eval_policy.py runs/g8-$c-s*/checkpoint.pt \
-      --group "$c" --device cuda --train-routes --num-envs 128
+  uv run python scripts/eval_policy.py runs/g8-$c-s*/checkpoint.pt --group "$c" $OUT
 done
-uv run python scripts/eval_policy.py --policy b0 --device cuda --train-routes --num-envs 128
+uv run python scripts/eval_policy.py --policy b0 $OUT
 ```
 
 🔒 `--train-routes` on purpose: this is a **tuning** decision and the eval split
 is not for tuning. B0 paid a measured 0.6 pp for the same restriction.
+
+### A5. Get the results off the box
+
+```bash
+git add results/g8_gate1.jsonl && git commit -m "Gate 1 results" && git push
+```
+
+`results/` is tracked and `runs/` is gitignored, on purpose: **the summary is a
+result, the checkpoints are regenerable.** The pod pushes, the laptop pulls, and
+the numbers are versioned with the commit that produced them — no file juggling,
+and the provenance cannot drift from the code.
+
+⚠️ `--out` records **per-seed** values, not just `median [IQR]`. Every gate rule
+in §4 is declared on the *worst* seed, and a median alone cannot be judged
+against one.
+
+If the training curves are wanted too — they are what diagnosed the last three
+failures — `runs/*/log.jsonl` is small and gitignored, so copy it deliberately:
+
+```bash
+mkdir -p results/g8_curves
+for d in runs/g8-*/; do cp "$d/log.jsonl" "results/g8_curves/$(basename $d).jsonl"; done
+```
 
 ### A4. Sweep stage B
 

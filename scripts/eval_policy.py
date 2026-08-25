@@ -31,6 +31,7 @@ CPU. Never compare a number from one device with a number from another.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -181,6 +182,13 @@ def score(a, name: str, checkpoint: Path | None, num_drones: int) -> dict[str, l
     return cols
 
 
+def _append(path: Path, row: dict) -> None:
+    """One JSONL row, appended. Same contract as `sweep.py`'s summary file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("checkpoints", nargs="*", type=Path)
@@ -192,6 +200,17 @@ def main() -> None:
     ap.add_argument("--num-envs", type=int, default=64)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--train-routes", action="store_true", help="tune on these, never report them")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="ALSO append one JSONL row per (policy, N) here, carrying the PER-SEED "
+        "values and not just the median. Point it at results/ (tracked) rather than "
+        "runs/ (gitignored): the summary is a result, the checkpoints are regenerable, "
+        "so the machine that ran it can `git push` and the machine that analyses it "
+        "can `git pull`. Per-seed matters -- BLOCK_G_PLAN's gate rules are declared "
+        "on the WORST seed, and a median alone cannot be judged against them.",
+    )
     ap.add_argument(
         "--group",
         default=None,
@@ -247,6 +266,30 @@ def main() -> None:
                 unit = " %" if scale == 100.0 else ""
                 row += f"{m * scale:>12.1f}{unit:<2}[{i * scale:.1f}]".rjust(18)
             print(row)
+
+            if a.out:
+                _append(
+                    a.out,
+                    {
+                        "policy": name,
+                        "n": n,
+                        "split": split,
+                        "stage": a.stage,
+                        "fidelity": a.fidelity,
+                        "device": a.device,
+                        "num_envs": a.num_envs,
+                        "grouped": bool(a.group and name == a.group),
+                        "checkpoints": [str(cp) for cp in a.checkpoints]
+                        if a.group and name == a.group
+                        else ([str(checkpoint)] if checkpoint else []),
+                        # ⚠️ Per-seed, not just the aggregate. `median [IQR]` cannot be
+                        # judged against a rule declared on the worst seed, and every
+                        # gate rule in BLOCK_G_PLAN.md is.
+                        "seeds": {key: cols[key] for key in REPORT},
+                        "median": {key: med_iqr(cols[key])[0] for key in REPORT},
+                        "iqr": {key: med_iqr(cols[key])[1] for key in REPORT},
+                    },
+                )
 
 
 if __name__ == "__main__":
