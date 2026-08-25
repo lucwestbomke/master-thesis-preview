@@ -44,6 +44,21 @@ from src.baselines.evaluate import RolloutMetrics, rollout
 from src.env.core import STAGES, BatchedSwarmEnv, EnvConfig
 from src.models import SwarmActor
 
+#: Metrics stored as a fraction in [0, 1] and read as a percentage. ⚠️ Keep this
+#: in step with REPORT: `capable_last_third` shipped without it and printed as
+#: "0.4", one decimal of a fraction -- a +-5 pp resolution on the column the
+#: late-episode question is decided by.
+_AS_PERCENT = frozenset(
+    {
+        "mission_capable",
+        "observed",
+        "link_alive",
+        "chain_occluded",
+        "capable_last_third",
+        "observed_last_third",
+    }
+)
+
 REPORT = (
     "mission_capable",
     "observed",
@@ -270,11 +285,7 @@ def main() -> None:
             row = f"{name:<24}{n:>3}"
             for key in REPORT:
                 m, i = med_iqr(cols[key])
-                scale = (
-                    100.0
-                    if key in ("mission_capable", "observed", "link_alive", "chain_occluded")
-                    else 1.0
-                )
+                scale = 100.0 if key in _AS_PERCENT else 1.0
                 unit = " %" if scale == 100.0 else ""
                 row += f"{m * scale:>12.1f}{unit:<2}[{i * scale:.1f}]".rjust(18)
             print(row)

@@ -737,6 +737,64 @@ episode and asks for the second half to be reported separately — **and nothing
 this block has ever reported it.** That measurement gap is the next thing to
 close, before any fifth intervention.
 
+### 📏 G10 — the behavioural profile, and three corrections it forces
+
+Free measurement: the **existing** g8/g9 checkpoints re-scored with
+`observer_range_m` and the late-episode split. No training. Stage 4, F4, train
+split, CUDA, 5 seeds.
+
+| policy | capable | last third | ratio | observer range | late | tenure | role entropy | handoffs |
+|---|---|---|---|---|---|---|---|---|
+| **B0** | 59.6 % | 50 % | **0.84** | **88.8 [1.2]** | **79.8** | 272.7 | **0.10** | 1.0 |
+| GNN control | 40.7 % | 40 % | **0.98** | **184.0 [20.7]** | 169.2 | 43.2 | **0.50** | 8.0 |
+| + `w_relay 0.2` | 42.4 % | 40 % | 0.94 | 189.5 | 181.6 | 44.5 | 0.50 | 8.0 |
+| + `w_relay 0.5` | 39.7 % | 30 % | 0.76 | 208.3 | 213.1 | 39.7 | 0.50 | 8.7 |
+| random | 11.1 % | 10 % | 0.90 | 327.0 | 324.7 | 16.8 | 0.60 | 7.1 |
+
+**1. ⛔ "The swarm fails late" is falsified.** Last-third over overall: **B0 0.84**
+— *it* degrades most — against the learned policies' **0.94–0.98** and random's
+0.90. The learned deficit is **uniform across the episode**, not concentrated at
+the hard end. The coordination-trap prediction in the section above made exactly
+the opposite call and is wrong.
+
+**2. ⚠️ The 291 m stand-off figure was stale.** It came from the *first
+full-mission pilot* and has been quoted throughout this block as though current.
+The GNN policies sit at **184 m**, B0 at **88.8 m** — a **2.1×** gap, not 3.7×.
+Every place 291 m appears above should be read as historical.
+
+**3. 📏 And Block B already measured why 184 m fails.** Along-street sightline
+median **127 m** (p90 387); across-street envelope at 80 m median **43 m**.
+**B0's 89 m sits inside the median sightline and the learned policy's 184 m sits
+outside it** — so the learned observer's view is intermittent *by construction of
+the city*, not by bad flying. That is the whole `observed` gap (64.9 % vs 91.6 %)
+in one line, and it is a **geometry threshold**, not a smooth cost.
+
+### 🔍 The finding: role differentiation emerges at stage 1 and collapses at stage 4
+
+| | role entropy | handoffs | tenure |
+|---|---|---|---|
+| B0 | **0.10** | 1.0 | 272.7 |
+| GNN, **stage 4** | **0.50** | 8.0 | 43.2 |
+| random | 0.60 | 7.1 | 16.8 |
+| *GNN, **stage 1*** | ***0.20*** | *0.9* | *51.4* |
+
+**The same architecture measures 0.20 at stage 1 and 0.50 at stage 4** — against
+random's 0.60. On every *role* statistic the full-mission policy is close to
+random; on every *performance* statistic it is far above it (40.7 % vs 11.1 %).
+
+**The swarm learns to fly at the target and does not learn to organise.** And it
+*can* organise — it does at stage 1, where the HVT is stationary. What breaks is
+holding a role while the target moves, which is the one thing B0 gets from an
+explicit belief plus hysteresis (a seeing drone outranks a non-seeing one, so the
+incumbent keeps the role through a momentary occlusion).
+
+⚠️ **This re-opens recurrence, on a technicality worth taking seriously.**
+Recurrence was dropped on `hop | observed` — since shown to measure geometry —
+and on tenure. `role_entropy` did not exist then, so **the recurrent runs have
+never been scored on the statistic that now defines the failure.** The
+checkpoints exist; re-scoring them is free and must happen before recurrence
+stays dropped.
+
 ### 📏 G5 / stage B — RQ2's first eval-split answer
 
 Each architecture at **its own** equal-budget winner, eval split, 5 seeds:

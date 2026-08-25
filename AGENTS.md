@@ -94,13 +94,25 @@ nulls** — recurrence (−1.05 pp), `w_hold`, the per-drone `w_relay` potential
 Yu et al.'s agent-specific critic (which actively hurt). Each was pre-declared and
 run at 5 seeds; all are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-📏 **And `hop | observed` — the statistic three of those were judged on — measures
-geometry, not behaviour.** Random 1.83, every learned policy 1.86–1.93, B0 2.26:
-hop count is set by where the *observer* stands against `R` = 524 m, so there is
-**no separate relay-role failure**. `observed`, tenure and hop count are three
-views of one failure — **the observer does not close** — and closing is a
-coordination trap: it only pays once the rest of the swarm has extended the chain
-to meet it, so every unilateral deviation is worse than the joint move.
+📏 **The failure, measured.** The learned observer stands at **184 m**; B0 stands
+at **88.8 m [1.2]**. Block B measured the along-street sightline median at
+**127 m** — so B0 sits *inside* it and the learned policy sits *outside* it, and
+its view is intermittent by construction of the city. That is the whole
+`observed` gap (64.9 % against 91.6 %), and it is a **geometry threshold**, not a
+smooth cost.
+
+🔍 **Role differentiation emerges at stage 1 and collapses at stage 4.**
+`role_entropy` (0 = one drone owns the observer role, 1 = all equal): B0 **0.10**,
+the same GNN architecture **0.20 at stage 1** and **0.50 at stage 4**, random
+**0.60**. On every *role* statistic the full-mission policy is near random; on
+every *performance* statistic it is far above it. **The swarm learns to fly at the
+target and does not learn to organise** — and it can organise when the target
+holds still, so what breaks is holding a role while the target moves.
+
+⚠️ Two corrections this forced: the long-quoted **291 m** stand-off was the *first
+pilot*, not current; and **`hop | observed` measures geometry, not behaviour**
+(random 1.83, every learned policy 1.86–1.93, B0 2.26 — hop count follows from
+where the observer stands). Three interventions were judged on it.
 
 Sweep findings worth carrying: `deep` (rollout 64) wins and `wide` **quadrupled**
 the seed spread it was built to shrink; **MLP → DeepSets is +6.9 pp and robust**
