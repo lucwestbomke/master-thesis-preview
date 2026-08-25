@@ -375,7 +375,17 @@ class Meter:
                 torch.stack([v / self.count for v in self.terms.values()])
                 if self.terms
                 else torch.zeros(0, device=self.device),
-                (self.finished_return / self.finished.clamp_min(1)).reshape(1),
+                # ⚠️ NaN, not 0.0, when no episode ENDED in this window. At
+                # `num_envs = 4096` one logging interval is 20 env-steps against
+                # a 600-step episode, so ~29 of every 30 rows contain no episode
+                # boundary at all -- and `finished_return / 0` printed as a
+                # confident `ret/ep 0.0`, which reads as "the return was zero"
+                # rather than "nothing finished". Log rows are for reading.
+                torch.where(
+                    self.finished > 0,
+                    self.finished_return / self.finished.clamp_min(1),
+                    torch.full_like(self.finished_return, float("nan")),
+                ).reshape(1),
                 self.finished.reshape(1),
             ]
         )
@@ -483,7 +493,14 @@ def _value_of(agent):
 def _save(cfg: TrainConfig, agent: MAPPO, path: Path) -> Path:
     torch.save(
         {
-            "config": {k: v for k, v in asdict(cfg).items() if k != "schedule"},
+            # ⚠️ `recurrent_critic` is only CONSULTED when `recurrent` is on, so the
+            # raw dataclass logs `recurrent_critic: true` for a feedforward run and
+            # describes a critic that was never built. A run log is evidence; it has
+            # to say what was constructed, not what a default happens to hold.
+            "config": {
+                **{k: v for k, v in asdict(cfg).items() if k != "schedule"},
+                "recurrent_critic": bool(cfg.recurrent and cfg.recurrent_critic),
+            },
             "schedule": asdict(cfg.schedule),
             "architecture": cfg.architecture,
             "hidden": cfg.hidden,
@@ -521,7 +538,14 @@ def _open_log(cfg: TrainConfig, out: Path, env, agent):
     """JSONL always; W&B only when asked, so a run never needs the network."""
     handle = (out / "log.jsonl").open("w")
     meta = {
-        "config": {k: v for k, v in asdict(cfg).items() if k != "schedule"},
+        # ⚠️ `recurrent_critic` is only CONSULTED when `recurrent` is on, so the
+        # raw dataclass logs `recurrent_critic: true` for a feedforward run and
+        # describes a critic that was never built. A run log is evidence; it has
+        # to say what was constructed, not what a default happens to hold.
+        "config": {
+            **{k: v for k, v in asdict(cfg).items() if k != "schedule"},
+            "recurrent_critic": bool(cfg.recurrent and cfg.recurrent_critic),
+        },
         "schedule": asdict(cfg.schedule),
         "iterations": cfg.iterations,
         "actor_parameters": parameter_count(_policy_of(agent)),
@@ -547,8 +571,9 @@ def _open_log(cfg: TrainConfig, out: Path, env, agent):
             f"  it {row['timestep']:>6}  steps {row['env_steps']:>10,}  "
             f"capable {row['mission_capable'] * 100:5.1f} %  "
             f"observed {row['observed'] * 100:5.1f} %  "
-            f"ret/ep {row['episode_return']:8.1f}  "
-            f"{row['env_steps_per_s']:,.0f} steps/s"
+            f"ret/ep {row['episode_return']:>8}  "
+            if row["episode_return"] != row["episode_return"]  # NaN: nothing finished
+            else f"ret/ep {row['episode_return']:8.1f}  {row['env_steps_per_s']:,.0f} steps/s"
         )
 
     return log
