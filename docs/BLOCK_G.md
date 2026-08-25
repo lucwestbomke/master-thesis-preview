@@ -715,7 +715,9 @@ gap is observation persistence, not chain-building and not tuning.**
 
 ### What is still open
 
-Ordered by what blocks the thesis, not by build order.
+Ordered by what blocks the thesis, not by build order. The *sequenced* version --
+commands, decision gates and the 2026-12-31 stopping rule -- is
+[`BLOCK_G_PLAN.md`](BLOCK_G_PLAN.md).
 
 * **⛔ THE GATE: the full mission does not clear B0.** Best measured **45.1 %
   [3.0]** (GNN, `deep`, `dref400_k30`, sweep stage A) against B0's **57.5 %** on

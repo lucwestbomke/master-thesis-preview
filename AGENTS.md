@@ -212,6 +212,7 @@ in both paths. Do not reason about VRAM pressure from it.
 | [`docs/BLOCK_D.md`](docs/BLOCK_D.md) | building the env core, or touching altitude / cue / sensor / the throughput gate |
 | [`docs/BLOCK_F.md`](docs/BLOCK_F.md) | touching the fidelity ladder, `R`, or anything RQ1 reports |
 | [`docs/BLOCK_G.md`](docs/BLOCK_G.md) | **building models, the trainer or the curriculum** — read the anti-learning bug first |
+| [`docs/BLOCK_G_PLAN.md`](docs/BLOCK_G_PLAN.md) | **starting a work session** — what happens next, in order, with the gate rules declared in advance and a dated stopping rule |
 
 ---
 
