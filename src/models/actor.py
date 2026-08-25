@@ -45,7 +45,6 @@ discipline, and all three accept `N` in {3, 5, 8} without reshaping.
 
 from __future__ import annotations
 
-import itertools
 from typing import Any
 
 import torch
@@ -53,6 +52,7 @@ from skrl.models.torch import GaussianMixin, Model
 from torch import Tensor, nn
 
 from ..env.core import ACTION_DIM, EDGE_DIM, EGO_DIM, FLAT_DIM, NEIGHBOUR_DIM, unpack_flat
+from .recurrence import rnn_specification, run_gru
 
 ARCHITECTURES = ("mlp", "deepsets", "gnn")
 
@@ -281,50 +281,19 @@ class SwarmActorRNN(SwarmActor):
         self.head = nn.Linear(rnn_hidden, ACTION_DIM)
 
     def get_specification(self) -> dict[str, Any]:
-        return {
-            "rnn": {
-                "sequence_length": self.sequence_length,
-                "sizes": [(self.rnn_layers, self.num_envs, self.rnn_hidden)],
-            }
-        }
+        return rnn_specification(
+            self.sequence_length, self.rnn_layers, self.num_envs, self.rnn_hidden
+        )
 
     def compute(self, inputs: dict[str, Tensor], role: str = ""):
-        features = self.trunk(inputs["observations"])
-        hidden = inputs["rnn"][0]
-
-        if self.training:
-            # (N_sequences * L, F) -> (N_sequences, L, F), and take each
-            # sequence's FIRST hidden state rather than all L copies of it.
-            seq = features.view(-1, self.sequence_length, features.shape[-1])
-            hidden = hidden.view(self.rnn_layers, -1, self.sequence_length, hidden.shape[-1])[
-                :, :, 0, :
-            ].contiguous()
-
-            terminated = inputs.get("terminated")
-            truncated = inputs.get("truncated")
-            done = terminated if truncated is None else (terminated | truncated)
-
-            if done is not None and torch.any(done):
-                # Split the sequence at every step where some episode ended and
-                # zero the carried state there. Without this, memory leaks across
-                # an episode boundary and the policy conditions on a previous
-                # episode's target.
-                done = done.view(-1, self.sequence_length)
-                cuts = (
-                    [0]
-                    + (done[:, :-1].any(dim=0).nonzero(as_tuple=True)[0] + 1).tolist()
-                    + [self.sequence_length]
-                )
-                chunks = []
-                for lo, hi in itertools.pairwise(cuts):
-                    out, hidden = self.gru(seq[:, lo:hi, :], hidden)
-                    hidden[:, done[:, hi - 1], :] = 0.0
-                    chunks.append(out)
-                rnn_out = torch.cat(chunks, dim=1)
-            else:
-                rnn_out, hidden = self.gru(seq, hidden)
-        else:
-            rnn_out, hidden = self.gru(features.view(-1, 1, features.shape[-1]), hidden)
-
-        rnn_out = rnn_out.flatten(start_dim=0, end_dim=1)
+        rnn_out, hidden = run_gru(
+            self.gru,
+            self.trunk(inputs["observations"]),
+            inputs["rnn"][0],
+            training=self.training,
+            sequence_length=self.sequence_length,
+            num_layers=self.rnn_layers,
+            terminated=inputs.get("terminated"),
+            truncated=inputs.get("truncated"),
+        )
         return torch.tanh(self.head(rnn_out)), {"log_std": self.log_std, "rnn": [hidden]}

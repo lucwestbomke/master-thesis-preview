@@ -39,7 +39,14 @@ from skrl.memories.torch import RandomMemory
 from skrl.multi_agents.torch.mappo import MAPPO
 
 from ..env.core import GAMMA, BatchedSwarmEnv, EnvConfig, Fidelity
-from ..models import ARCHITECTURES, SwarmActor, SwarmActorRNN, SwarmCritic, parameter_count
+from ..models import (
+    ARCHITECTURES,
+    SwarmActor,
+    SwarmActorRNN,
+    SwarmCritic,
+    SwarmCriticRNN,
+    parameter_count,
+)
 from .curriculum import CurriculumCallback, CurriculumSchedule
 from .skrl_wrapper import SWARM_UID, SharedPolicyWrapper, mappo_cfg, ppo_cfg
 
@@ -77,6 +84,12 @@ class TrainConfig:
     # a feedforward actor cannot represent "I am the observer", and observer
     # tenure is where every learned policy loses to B0 by ~8x.
     recurrent: bool = False
+    # ⚠️ A recurrent actor implies a recurrent CRITIC, which is the published
+    # MAPPO configuration (Yu et al., 2022) and a correctness argument rather
+    # than a knob -- see `SwarmCriticRNN`. `--ff-critic` recovers the
+    # feedforward critic, and exists so the A/B stays measurable rather than
+    # because it is a defensible setting.
+    recurrent_critic: bool = True
     rnn_hidden: int = 128
     sequence_length: int = 16
     hidden: int | None = None
@@ -195,7 +208,17 @@ def build(cfg: TrainConfig) -> tuple[SharedPolicyWrapper, MAPPO, CurriculumCallb
             dev,
             **actor_kwargs,
         ).to(dev)
-    critic = SwarmCritic(env.state_spaces[SWARM_UID], env.action_spaces[SWARM_UID], dev).to(dev)
+    if cfg.recurrent and cfg.recurrent_critic:
+        critic = SwarmCriticRNN(
+            env.state_spaces[SWARM_UID],
+            env.action_spaces[SWARM_UID],
+            dev,
+            num_envs=env.num_envs,
+            rnn_hidden=cfg.rnn_hidden,
+            sequence_length=cfg.sequence_length,
+        ).to(dev)
+    else:
+        critic = SwarmCritic(env.state_spaces[SWARM_UID], env.action_spaces[SWARM_UID], dev).to(dev)
 
     memory = RandomMemory(memory_size=cfg.rollouts, num_envs=env.num_envs, device=dev)
     if cfg.recurrent:
@@ -522,6 +545,11 @@ def main() -> None:
     ap.add_argument("--entropy", type=float, default=0.0)
     ap.add_argument("--min-std", type=float, default=None, help="floor on the action std")
     ap.add_argument("--recurrent", action="store_true", help="GRU actor (skrl PPO_RNN)")
+    ap.add_argument(
+        "--ff-critic",
+        action="store_true",
+        help="feedforward critic under a recurrent actor (the A/B control, not a setting)",
+    )
     ap.add_argument("--rnn-hidden", type=int, default=128)
     ap.add_argument("--seq-len", type=int, default=16)
     ap.add_argument("--kl", type=float, default=0.0, help="KL-adaptive LR threshold (0 = off)")
@@ -579,6 +607,7 @@ def main() -> None:
             entropy_loss_scale=a.entropy,
             min_log_std=math.log(a.min_std) if a.min_std else -20.0,
             recurrent=a.recurrent,
+            recurrent_critic=not a.ff_critic,
             rnn_hidden=a.rnn_hidden,
             sequence_length=a.seq_len,
             kl_threshold=a.kl,

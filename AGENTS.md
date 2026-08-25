@@ -32,7 +32,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
 | **F** | Fidelity levels F0–F4 as config flags — RQ1's independent variable | ✅ **done**, 38 + 9 tests; `R` = **524 m** measured; F4 == the pre-Block-F env — [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
-| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 315 tests. **Gate met**: MAPPO 74.8 % [12.7] vs random 35.1 % on stage 1, 5 training seeds. G1a/G1b await CUDA — [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
+| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 333 tests. Stage-1 gate met; **the full-mission gate is not**: best 45.1 % [3.0] against B0's 57.5 %. 81-run equal-budget sweep done — [`docs/BLOCK_G.md`](docs/BLOCK_G.md) |
 | H | Sionna offline validation of the closed-form channel | not started |
 
 Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
@@ -48,7 +48,29 @@ specified in [`docs/BLOCK_C.md`](docs/BLOCK_C.md), Block D in
 [`docs/BLOCK_G.md`](docs/BLOCK_G.md). Why each block exists, what it gates and
 which thesis chapter it feeds: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-🔨 **Block G is in progress and the gate is met.** MAPPO reaches **74.8 % [12.7]**
+🔨 **Block G is in progress. The stage-1 gate is met; the one that matters is
+not.** The 81-run equal-budget sweep puts the best feedforward policy at
+**45.1 % [3.0]** on the full mission against B0's **57.5 %** (train split, CUDA),
+and the deficit is **observer tenure: 47.4 steps against B0's 264.6**. Tuning did
+not touch it — the whole grid bought ~12 steps out of 218. Three sweep findings
+worth carrying: `deep` (rollout 64) wins and `wide` **quadrupled** the seed spread
+it was built to shrink; MLP → DeepSets is +16 pp while DeepSets → GNN is a null at
+N = 5; and the reward-shaping axis is noise, so a winner's shaping label means
+nothing.
+
+☠️ **`skrl`'s `PPO_RNN` is an un-migrated fork of an older PPO** and its stale
+`compute_gae` masks GAE on `terminated` alone, so at every truncation the
+recursion runs *through* the reset and pulls the next episode's value and
+advantage backwards. Recurrent training collapsed for a week on this, and the GRU
+was blamed for it: the collapse reproduces with **feedforward** models on the same
+path (3.8 % against MAPPO's 76.2 %). Fixed in
+`training/recurrent_ppo.PPO_RNN_Aligned`, isolated to that one line, and
+recurrence now reaches feedforward parity. ⚠️ **No reported number is affected** —
+everything measured went through `MAPPO`, which is correct. Anything else
+inherited from `ppo_rnn.py` should be diffed against `mappo.py` before it is
+trusted.
+
+Earlier stage-1 record, unchanged: MAPPO reaches **74.8 % [12.7]**
 mission-capable on curriculum stage 1 against random's **35.1 %** (5 **training**
 seeds, deterministic, scored through `evaluate.py` on the train split, MPS).
 The spread is wide (60–78 %) and B0 still wins that stage at 87.5 %. Three
@@ -365,7 +387,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 315 tests (+4 CUDA-only skips)
+uv run pytest                                    # 333 tests (+7 CUDA-only skips)
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for

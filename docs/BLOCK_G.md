@@ -368,106 +368,192 @@ relational channel is where a drone can read its neighbours' `sees_hvt` and
 `on_path` bits and decline to duplicate a role somebody already holds. It is one
 seed and it does not yet clear B0, so it is a lead, not a result.
 
-### ⛔ Recurrence: implemented, unit-tested, and it does not train — parked
+### ✅ Recurrence: it trains. The GRU was never the problem — skrl's `PPO_RNN` was
 
-The diagnosis above says the actor cannot represent *"I am the observer"*, so a
-GRU was added between the trunk and the head, **identical in all three rungs** so
-RQ2 still isolates the trunk. It is built, it is tested, and **it loses badly to
-the feedforward baseline it was meant to beat.** Recorded in full because the
-diagnosis that motivated it still stands and somebody will propose this again.
+Superseded 2026-08-25. The previous version of this section concluded "the fault
+is localised to sequence replay" and recommended `--seq-len 1` as the working
+fallback and the bisection point. **Both were wrong**, and the error is the
+instructive part: every probe had been aimed at the component under suspicion
+(the GRU) and none at the *vehicle carrying it*.
 
-| run (12 M, fast schedule, `--min-std 0.2`) | stage-4 plateau |
-|---|---|
-| feedforward GNN (d3) | **37.1 %** |
-| feedforward MLP (d1) | 35.9 % |
-| **recurrent GNN** | **1.6 %** |
-| **recurrent MLP** | **0.7 %** |
-| *random, for scale* | *11.0 %* |
+**The bisection that settled it.** `PPO_RNN_Aligned` was run with **feedforward**
+models — no GRU anywhere, so skrl leaves `_rnn = False` and the class degrades to
+plain PPO on the same code path. Stage 1, seed 0, 4 M steps, `--min-std 0.2`:
 
-**Below random**, and monotonically decreasing — the same shape as the
-`clip_actions` bug. What is known, in the order it was established:
+| vehicle, identical MLP actor + MLP critic | peak | final |
+|---|---|---|
+| **MAPPO** — what every reported number used | **82.7 %** | **76.2 %** |
+| **`PPO_RNN`** | 52.5 % | **3.8 %** |
+
+The collapse reproduces with no recurrence in the run at all. Everything
+attributed to the GRU for a week belonged to the agent class.
+
+**The cause, and it is one line.** `skrl/agents/torch/ppo/ppo_rnn.py` in 2.1.0 is
+an **un-migrated copy of an older PPO**: it ships its own private `compute_gae`
+and its own private `record_transition`, and skrl's truncation rework landed in
+`ppo.py` and `mappo.py` without ever being propagated to it.
+
+```python
+not_terminated = terminated.logical_not()                       # ppo_rnn.py:45
+not_done = ((terminated | truncated) if time_limit_bootstrap     # mappo.py:49
+            else terminated).logical_not()
+```
+
+GAE recurses backwards as
+`A_i = r_i − V_i + γ · not_done_i · (V_{i+1} + λ·A_{i+1})`. At a truncation
+`terminated` is False, so `not_terminated_i` is **True** and the recursion keeps
+going — but `auto_reset` has already put a fresh episode at `i+1`. The truncation
+step therefore receives `γ·(V_{i+1} + λ·A_{i+1})` where `V_{i+1}` is the **next
+episode's opening value** and `A_{i+1}` is the **next episode's advantage**, on
+top of the bootstrap already folded into `r_i`. The bootstrap is double-counted
+*and* the next episode's advantage stream leaks backwards through the reset, then
+propagates to every earlier step of the rollout with weight `(γλ)^k` = 0.947 per
+step at γ = 0.997, λ = 0.95.
+
+⚠️ **That is why it presented as a slow poison rather than a crash.** Only
+rollouts spanning a reset are contaminated — ~21 % at stage 1 (32-step rollouts,
+150-step episodes) — so the curve rises normally for ~600 k steps before
+degrading. And because the envs reset in lockstep, when it hits it hits all 256
+at once.
+
+**A second, smaller divergence, fixed at the same time.** `PPO_RNN` bootstraps
+with `V(observations, states)` — the state being *left* — where `MAPPO` uses
+`V(next_observations, next_states)`. So `PPO_RNN` never reads `next_observations`
+at all, and Block D's `final_observations()` / `final_states()` seam is dead code
+on this path.
+
+**Which fix did the work — isolated, because two fixes shipped together.** Same
+vehicle, feedforward models, seed 0:
+
+| | peak | final |
+|---|---|---|
+| neither fix | 52.5 % | 3.8 % |
+| **A** — bootstrap off the next state | 68.9 % | 11.3 % |
+| **B** — the GAE mask | 82.1 % | **69.7 %** |
+| both (what ships) | 73.8 % | 68.5 % |
+
+**B is the entire effect; A alone changes nothing.** A is kept because it is what
+`MAPPO` does and it costs nothing, but ⚠️ **do not record A as the fix.** B alone
+against both (69.7 vs 68.5) is one seed each and not distinguishable; A alone
+against B alone is far outside any seed spread measured here.
+
+> ☠️ **The root cause is the file, not the line.** Both this bug and the
+> hidden-state aliasing bug below come from `ppo_rnn.py` being a stale fork.
+> Treat anything else inherited from it as suspect, and diff against `mappo.py`
+> before trusting it.
+
+**✅ No reported number is invalidated.** The bug lives only in `PPO_RNN`.
+BLOCK_G's tables, the 81-run sweep and every feedforward run went through
+`MAPPO`, which is correct on both counts.
+
+#### The gate, and what it does and does not show
+
+Stage 1, 5 training seeds, scored through `evaluate.py` on the train split, MPS —
+the same harness and split as the table at the top of this file:
+
+| stage-1 policy | mission capable | observer tenure | handoffs |
+|---|---|---|---|
+| B0 | 87.5 % [0.8] | 101.8 [3.1] | 0.3 |
+| MAPPO MLP feedforward | 74.8 % [12.7] | 50.3 [10.8] | 1.0 |
+| **MAPPO MLP recurrent** | **76.7 % [13.1]** | **53.5 [2.5]** | 1.1 |
+
+**The gate is met: recurrence reaches feedforward parity.** It is no longer
+broken. That is all it shows.
+
+⚠️ **This is a null, and it is the expected null.** +1.9 pp on a 13 pp IQR, tenure
++3.2 on a 10.8 IQR. Stage 1 has a stationary HVT and `mission_capable ==
+observed`, so there is no history-dependence to exploit and memory *should* buy
+nothing. **Do not read this table as evidence for or against recurrence.** The
+one suggestive number is tenure's seed spread collapsing 10.8 → 2.5.
+
+The feedforward row reproduces this file's own 74.8 % [12.7] exactly, which
+cross-checks the harness — `--min-std 0.2` was inert at stage 1, because σ never
+fell below 0.357 and the floor never bound.
+
+#### ⛔ The recurrent-critic hypothesis: built, tested, not the mechanism
+
+The previous "where to resume" note argued the critic was feedforward while the
+policy was recurrent, so `V(s)` averaged over a hidden state it could not see and
+every advantage was biased for exactly the history-dependent behaviour the GRU
+exists to produce (Yu et al. 2022 make both recurrent). It was built —
+`models.critic.SwarmCriticRNN`, no `architecture` argument, identical in all
+three rungs — and measured against the feedforward critic on the *unfixed* path:
+
+| stage 1, recurrent actor | peak | final |
+|---|---|---|
+| feedforward critic | 42.7 % | 2.9 % |
+| recurrent critic | 54.9 % | 2.9 % |
+
+It raised the peak and delayed the collapse by ~600 k steps. It did not stop it.
+**A real improvement, not the mechanism** — and it is what motivated the
+bisection that found the real one. It ships, because it is the published MAPPO
+configuration and it is now the cheaper half of a question worth answering.
+
+The second hypothesis in that note — `grad_norm_clip = 0.5` applied jointly to
+policy and value parameters (`ppo_rnn.py:557`) — **is real and remains untested.**
+It never needed to be invoked.
+
+#### Still true from the earlier investigation
 
 1. **The gradient is not inverted.** The known-optimum probe (`-w_effort·‖a‖²`,
-   optimum `a = 0`) improves through the recurrent path, just ~2x slower and
-   noisier than feedforward (−0.91 → −0.71 against −0.91 → −0.38).
+   optimum `a = 0`) improves through the recurrent path. ⚠️ It also stayed
+   positive throughout the collapse, which is *why* it did not localise this bug:
+   a pure per-step action cost has almost no cross-episode structure, so the
+   boundary leak costs it almost nothing. **The probe clears the loop; it does
+   not clear the credit assignment.**
 2. **The model is exact.** Sequence-mode replay reproduces step-mode collection
-   to **1.19e-7** given the same hidden state — a standalone check, no skrl
-   involved. The GRU code, the `view(layers, N_seq, L, H)[:, :, 0, :]` initial-state
-   selection and the episode-boundary chunking are all correct.
-3. **The replayed hidden states are nevertheless wrong.** An epoch-0 identity
-   check — before any parameter moves, the recomputed log-probability of the
-   stored action must equal the stored one — gives mean |Δlog p| = **1.8e-3**,
-   concentrated at **sequence position 0** and decaying along the sequence, with
-   no episode boundary in the rollout. Given (2), that residual can only come
-   from the stored/replayed states themselves.
-4. **It is not a train/deploy context mismatch.** The obvious hypothesis was that
-   training on 16-step sequences while collection integrates over 600 steps puts
-   the GRU outside its trained state distribution. **Falsified:** the recurrent
-   policy also collapses at **stage 1**, where episodes are 150 steps and the
-   feedforward policy reaches 75–79 %.
+   to 1.19e-7 given the same hidden state, and the epoch-0 log-probability
+   identity holds at `--seq-len` 1 and 4. Both are pinned by
+   `models/test_recurrence.py` and `training/test_recurrent.py`.
+3. **☠️ The hidden-state aliasing bug is real and stays fixed.**
+   `PPO_RNN.record_transition` ends `self._rnn_initial_states =
+   self._rnn_final_states`, binding both names to the same dict, so from the next
+   step on the transition records a state one step ahead of the one that produced
+   its action. Fixed by `PPO_RNN_Aligned`, pinned directly. It was never the
+   cause of the collapse, and it is still worth having fixed.
+4. **It was never a train/deploy context mismatch**, and `--seq-len 1` was never
+   a diagnosis — that run was simply at a different point on the same doomed
+   curve.
 
-5. **✅ A real skrl bug found and fixed — and it was NOT the cause.**
-   `PPO_RNN.record_transition` ends with
-   `self._rnn_initial_states = self._rnn_final_states`, binding both names to the
-   **same dict**. From the next step on, `act()` writes the post-step state into
-   `_rnn_final_states` -- which *is* `_rnn_initial_states` -- so the transition
-   records a hidden state one step ahead of the one that produced its action.
-   Measured directly: `stored[t] == h_in[t+1]` for every `t >= 1`, exact only at
-   `t = 0`, before the aliasing happens. Every importance ratio in every
-   recurrent update was computed against the wrong state.
+#### What is pinned now
 
-   Fixed by `training/recurrent_ppo.PPO_RNN_Aligned`, which snapshots the states
-   in `act()` before skrl can overwrite them. `test_recurrent.py` pins the root
-   cause directly (the memory must hold the state the action was taken from) and
-   the epoch-0 identity at both `--seq-len 1` and `--seq-len 4`.
+`models/recurrence.py` holds one GRU driver shared by actor and critic, so the
+sequence logic exists once. Tests cover: sequence replay reproduces step-mode
+collection; the episode-boundary state zeroing; the gradient surviving the
+boundary split; the critic's own epoch-0 value identity; the critic being
+identical across all three rungs (⛔ MODELS.md); and **skrl's `Memory` ordering
+sequence rows env-major and time-contiguous**, which is the layout `view(-1, L)`
+silently assumes and which nothing had asserted.
 
-   ⚠️ **Fixing it changed nothing about the training.** Stage 1 still collapses
-   (37.4 % -> 2.2 %, against 35 % -> 3 % before the fix), and the known-optimum
-   probe still improves ~2x more slowly than feedforward (−0.913 -> −0.712
-   against −0.912 -> −0.416). The bug was real, is worth having fixed, and was
-   not the mechanism. **Recurrence remains unresolved.**
+Two latent bugs were found while factoring it out: the boundary zeroing was an
+in-place write into a tensor autograd saves (now `masked_fill`), and
+`terminated=None, truncated=<tensor>` raised. Neither had fired.
 
-6. **The fault is localised to sequence replay** — before and after the fix. `--seq-len 1` makes skrl take
-   its non-sequence sampling path (no reordering, no sequence grouping) and
-   changes nothing else — same GRU, same agent, same config. It **does not
-   collapse**: at stage 1 it dips to 13 % and then recovers to **39.6 % and
-   still rising**, against `--seq-len 16`'s collapse to 3 %.
+#### ⚠️ Open: is recurrence actually worth keeping?
 
-⚠️ The epoch-0 ratio of 0.9999 is far inside PPO's 0.2 clip and cannot by itself
-explain the collapse, so the 1.8e-3 residual is a **symptom** rather than the
-mechanism — but it points the same way as (5): it is concentrated at sequence
-position 0, which is exactly where the replayed initial state enters. The precise
-defect in the sequence path is **not yet identified**; what is established is
-which path contains it.
+**Undecided, and stage 1 cannot decide it.** The mechanism argument is a stage-4
+one: B0 holds the observer 264.6 steps, the sweep's best feedforward policy 47.4,
+and the 81-run grid moved that by 12 steps out of a 218-step deficit. A stateless
+function cannot represent "I am the observer and I am holding station"; that
+argument is untouched by anything measured here.
 
-**Implementation note for whoever picks this up.** skrl 2.1.0 ships `PPO_RNN` but
-**no recurrent MAPPO** (`skrl/multi_agents/` contains no RNN handling at all).
-Since `SharedPolicyWrapper` already presents the swarm as one parameter-shared
-agent, skrl's MAPPO at a single agent id *is* PPO with a centralized state-based
-critic, so `PPO_RNN` was used as the vehicle — same algorithm, different class.
-**Where to resume, and the strongest untested hypothesis first.** The critic is
-**feedforward while the policy is recurrent**. The policy's behaviour then
-depends on a hidden state the value function cannot see, so `V(s)` is an average
-over hidden states and every advantage is biased for exactly the
-history-dependent behaviour the GRU exists to produce. Yu et al. (2022) make
-both recurrent. That is one flag away and has never been tried.
+The decision experiment, ~1 GPU-hour, **with the rule declared before it runs**:
 
-Second: `grad_norm_clip = 0.5` is applied to the policy and value parameters
-**jointly**, and a GRU's gradient norm is much larger than an MLP's -- so the
-clip may be squashing the critic's update whenever the actor's is big.
+> Full mission (stage 4, F4, curriculum), `deep` cadence, recurrent vs
+> feedforward, 5 seeds each, train split. Primary metric **observer tenure**,
+> secondary `mission_capable`.
+> * tenure ≥ ~95 (2× feedforward) **and** capable ≥ 45.1 % → keep, and the matrix
+>   runs recurrent
+> * tenure moves < 20 % **and** capable within IQR → drop it, record the negative
+>   result, and the tenure deficit needs a different attack
 
-`--seq-len 1` is the working fallback and the bisection point: it bypasses
-sequence replay, so a recurrent policy still carries hidden state through
-collection and evaluation — which is what role persistence needs — but gets no
-backpropagation through time, so the GRU can only learn myopic uses of its state.
-Resume by diffing the stored `rnn_policy_0` tensor against a hand-stepped
-reference across an episode boundary, at `mini_batches=1` first.
+Recurrence is a *shared component*, not a per-rung hyperparameter — the GRU is
+identical in all three rungs and the critic has no `architecture` argument — so
+deciding it once on one architecture and applying it uniformly satisfies
+MODELS.md rule 2. Say so in the methodology.
 
-**Recommendation: park it, but it is no longer a dead end.** The best result
-remains the **feedforward GNN at 37.1 %**, which was still improving at 12 M. Recurrence is a real lead — B0's
-264-step observer tenure against 27–35 is not going to be closed by a stateless
-policy — but it should be resumed with the CUDA budget, not debugged further on
-a laptop.
+Cost, if kept: ~1.6× wall-clock (13.2 k against 20.6 k env-steps/s on MPS).
+Compute is not a constraint (G1b: ~2 GPU-hours for the entire 45-run matrix).
 
 ### ⚠️ "The curriculum is hurting" — proposed on one seed, refuted on three
 
@@ -561,21 +647,116 @@ which is RQ1's independent variable and never a tuning axis.
 to the other two is exactly the unequal budget the rule forbids, and it is the
 tempting shortcut because the GNN is currently ahead.
 
+#### Stage A: measured, 81 runs, RTX 5090
+
+Median [IQR] `mission_capable` across 3 seeds, stage 4, F4, train split, 12 M
+steps. Reference on the same harness and split: **B0 = 57.5 % [1.4]**.
+
+| arch | winner | per seed | median [IQR] | tenure |
+|---|---|---|---|---|
+| MLP | `base` / `dref400` | 36.1 / 34.8 / 35.6 | **35.6 % [0.6]** | 34 |
+| DeepSets | `deep` / `shipped` | 38.4 / 46.4 / 42.5 | **42.5 % [4.0]** | 42 |
+| **GNN** | `deep` / `dref400_k30` | 45.1 / 45.3 / 39.3 | **45.1 % [3.0]** | 47 |
+
+**1. `deep` won, `wide` failed — and `wide` never tested its own hypothesis.**
+Pooled within-cell seed *range*, the quantity `wide` existed to shrink:
+
+| cadence | median within-cell range | median of cell-medians |
+|---|---|---|
+| `base` | 5.0 pp | 36.1 % |
+| `deep` | 6.1 pp | **42.2 %** |
+| `wide` | **21.6 pp** | 22.5 % |
+
+☠️ **`wide` did the opposite of its design intent: 4× the seed spread, −14 pp.**
+The reason is arithmetic. Holding gradient density at 488 forces `mini_batches`
+up by the same factor as `num_envs`, so **the minibatch the optimizer sees is
+40,960 rows in all three cadences** — gradient noise per step is unchanged and
+the preset's stated rationale ("a bigger batch, less gradient noise, aimed
+straight at the seed spread") is not what it varies. What it actually varies is
+*staleness*: 16 / 64 / 128 sequential grad steps on one collected batch, over
+366 / 92 / 46 update rounds.
+
+`deep` is staler still and wins anyway, so the winning axis is the one thing
+left: **rollout length 32 → 64**, against γ = 0.997's 333-step effective horizon.
+That was the axis the script claimed had "a real reason behind it"; it does.
+
+⚠️ **But `deep` confounds `num_envs` with `rollouts`** — see "What is still open".
+
+**2. MLP → DeepSets is a large clean effect; DeepSets → GNN is a null.**
+Like-for-like on `deep`, 9 runs per architecture:
+
+| arch | min | med | max |
+|---|---|---|---|
+| mlp | 22.7 | **26.1** | 32.3 |
+| deepsets | 38.4 | **42.2** | 46.4 |
+| gnn | 35.6 | **43.4** | 48.1 |
+
+Permutation invariance is worth **+16 pp with zero range overlap**. The
+relational rung — RQ2's actual claim — is **+1.2 pp with fully overlapping
+distributions**, which is the in-distribution null `MODELS.md` predicts. ⚠️ Report
+the *best-cell* contrast (35.6 / 42.5 / 45.1) rather than the deep-only one: the
+MLP is the only rung that prefers `base`, so the 16 pp figure carries an
+arch × cadence interaction. RQ2's informative column is N = 8 zero-shot and this
+sweep does not touch it.
+
+**3. Shaping is a null, and the winners are selecting on it.** On `deep`, pooled:
+`shipped` 39.4, `dref400` 38.8, `dref400_k30` 40.0 — a 1.2 pp spread against 6 pp
+of within-cell seed range, and the three per-architecture winners land on three
+*different* shapings, which is the signature of ranking noise. ⛔ **The shaping
+label on each winner carries no information**, and this file's earlier
+"`d_ref_m = 400` measured +3 pp on MPS" does not reproduce at 81 runs on CUDA.
+
+**4. The tuning did not touch the deficit.** Best-cell observer tenure is **47.4**
+against B0's **264.6**; the best single run of all 81 is 54.8. The entire grid
+bought ~12 steps out of a 218-step gap, while `corr(capable, tenure) = 0.875` and
+`corr(capable, observed) = 0.966` across all 81 runs. The best cell also converts
+observation into capability *better* than B0 (0.67 against 0.62). **The remaining
+gap is observation persistence, not chain-building and not tuning.**
+
 ### What is still open
 
-* **G1a / G1b** — blocked on CUDA.
+Ordered by what blocks the thesis, not by build order.
+
+* **⛔ THE GATE: the full mission does not clear B0.** Best measured **45.1 %
+  [3.0]** (GNN, `deep`, `dref400_k30`, sweep stage A) against B0's **57.5 %** on
+  the train split. Everything else on this list is secondary to closing that
+  12 pp. The diagnosis — observer tenure, 47.4 against 264.6 — is above.
+* **Is recurrence worth keeping?** It trains now and reaches feedforward parity
+  at stage 1, which is a null by construction. The decision experiment and its
+  pre-declared rule are in the recurrence section. ~1 GPU-hour.
+* **Sweep stage B** — the three winners at 5 seeds on the **eval** split, closing
+  the equal-budget claim `MODELS.md` rule 2 has owed since the block opened.
+  Decided 2026-08-25: run as declared, next GPU session. ~1 GPU-hour.
+* **G7** — Block F's open question: do F0/F2/F3-trained policies separate under
+  F4 on hop count, `chain_occluded` or p5 capacity? One pilot per rung, and it
+  de-risks RQ1's *attribution*, which is the primary research question. Cheap
+  enough that there is no reason to defer it to April 2027.
+* **`Φ_observe` saturates, and nothing has been done about it.** G6 measured that
+  `occlusion` returns `1e4` for "nothing in the way", so `clearance_best` is
+  `1e4` whenever *any* drone holds a clear ray and `Φ_observe` pins at 1.0. It
+  rewards **having** a sightline and says nothing about having a **better** one —
+  which is exactly the "hold station" gradient the tenure deficit is missing. It
+  lives inside `Φ`, so PBRS makes it optimum-preserving and it is on the
+  permitted list. The cheapest untried lever aimed at the actual deficit.
+* **The cadence grid confounds two axes.** `deep` changes `num_envs` (1024 →
+  4096) *and* `rollouts` (32 → 64) together, and `wide` shows `num_envs` alone is
+  harmful. The isolating cell — `1024 × 64 × 8 mini-batches`, same 40,960
+  minibatch, same 488 grad steps/M — is missing. 9 runs, and it must be labelled
+  a follow-up rather than folded into the equal-budget claim.
 * **G5** — the three architectures are built, parameter-matched to **2.3 %** and
-  tested (permutation invariance, off-N at 3/5/8, DeepSets == GNN with `e_ij`
-  zeroed). Not yet *compared* on a training run.
-* **G6** — `tau_c` / `tau_l` untouched. Retune once, against learning speed.
-* **G7** — Block F's open question. Needs one pilot per rung.
+  tested. Compared on the sweep at N = 5 only; RQ2's informative column is the
+  **N = 8 zero-shot** one and it is untouched.
 * **The curriculum schedule is provisional.** `(0.15, 0.35, 0.60)` with a 20 %
   mix is a starting point, not a measured schedule. Find it, then freeze it, then
   record the freeze in `DECISIONS.md`.
-* **The full mission does not clear B0.** Best pilot 37.1 % against 58.0 % on the
-  train split. The gate is not met and the diagnosis above is where to attack it.
-* **The seed spread is undiagnosed.** 60–78 % over five runs at stage 1. Judge
+* **The seed spread is undiagnosed.** 60–78 % over five runs at stage 1, and the
+  sweep did not shrink it: `wide` was built to and made it **4× worse**. Judge
   every tuning decision on the worst seed.
+* **`grad_norm_clip` is applied to policy and value parameters jointly**
+  (`ppo_rnn.py:557`, and `MAPPO` does the same). Real, plausible under a GRU,
+  never tested.
+* **G1a is incomplete** — `bench_env.py --envs 1024 4096` still owed; the first
+  CUDA session aborted on a `--breakdown` bug and only the 256-env row exists.
 
 ---
 

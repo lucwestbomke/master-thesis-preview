@@ -31,6 +31,54 @@ in the git log; commit messages are long on purpose.
 
 ## Design directions abandoned
 
+### ⚠️ "Recurrence does not train" — believed for a week, and the GRU was innocent
+
+**Proposed and acted on:** the recurrent actor collapsed at stage 1 (37 % → 2 %)
+where the feedforward actor reached 75–79 %. Three sessions of probes localised
+the fault to *sequence replay*, on the strength of `--seq-len 1` not collapsing
+and an epoch-0 log-probability residual concentrated at sequence position 0.
+`BLOCK_G.md` recommended parking recurrence and resuming by "diffing the stored
+`rnn_policy_0` tensor against a hand-stepped reference".
+
+**Killed 2026-08-25 by one control that had never been run:** `PPO_RNN` with
+**feedforward** models — no GRU anywhere, `_rnn = False`, so the class degrades to
+plain PPO on the same code path. It collapses identically (peak 52.5 %, final
+3.8 %) where the same models under `MAPPO` reach 76.2 %.
+
+**Cause:** `skrl/agents/torch/ppo/ppo_rnn.py` in 2.1.0 is an un-migrated copy of
+an older PPO, carrying its own stale `compute_gae`:
+
+```python
+not_terminated = terminated.logical_not()                    # ppo_rnn.py:45
+not_done = ((terminated | truncated) if time_limit_bootstrap  # mappo.py:49
+            else terminated).logical_not()
+```
+
+At a truncation `not_terminated` is True, so GAE recurses *through* the reset and
+the step collects `γ·(V_{i+1} + λ·A_{i+1})` from the **next episode** — on top of
+a bootstrap already folded into the reward. Double-counted, and the next
+episode's advantage propagates backwards at `(γλ)^k` = 0.947/step. Fixed in
+`training.recurrent_ppo.PPO_RNN_Aligned`; isolated against the second fix
+(bootstrapping off the next state), which on its own changes nothing: 3.8 % →
+11.3 % for that one alone, 69.7 % for the GAE mask alone.
+
+**✅ No reported number is affected.** Only `PPO_RNN` was ever wrong; every
+measured result went through `MAPPO`.
+
+**Two things to carry, and they are about method rather than about skrl.**
+
+1. ⚠️ **The known-optimum probe cleared the loop and hid this bug.** Under
+   `-w_effort·‖a‖²` PPO improved throughout the collapse, because a pure
+   per-step action cost has almost no cross-episode structure and the boundary
+   leak costs it nothing. **The probe clears the plumbing; it does not clear
+   credit assignment.** Add a probe with a known optimum that *spans* the
+   episode before trusting it again.
+2. ☠️ **Every probe was aimed at the component under suspicion and none at the
+   vehicle carrying it.** The decisive control — run the suspect *path* with the
+   suspect *component removed* — cost four minutes and was available from day
+   one. Do that before a third session of instrumenting the component.
+
+
 ### Adaptive transmit power — three framings, three nulls
 **Do not reintroduce Ptx as an action.** Evidence in `NEGATIVE_RESULTS.md`.
 

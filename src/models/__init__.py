@@ -6,12 +6,13 @@ the actor and nothing else.
 """
 
 from .actor import ARCHITECTURES, SwarmActor, SwarmActorRNN, parameter_count
-from .critic import SwarmCritic
+from .critic import SwarmCritic, SwarmCriticRNN
 
 __all__ = [
     "ARCHITECTURES",
     "SwarmActor",
     "SwarmActorRNN",
     "SwarmCritic",
+    "SwarmCriticRNN",
     "parameter_count",
 ]
