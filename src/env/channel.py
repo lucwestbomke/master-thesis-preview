@@ -92,6 +92,29 @@ def pathloss_a2a_db(
     unless a tall building intersects it. Modelled as a two-state channel:
     FSPL, plus a structural attenuation penalty when the ray is occluded.
 
+    ## Why this is NOT the TR 36.777 model, and that is correct
+
+    TR 36.777 covers **air-to-ground only** -- an aerial UE against a
+    ground-mounted eNodeB. It says nothing about drone<->drone links, where both
+    endpoints are above rooftop, and applying a street-canyon model to a ray that
+    never enters the canyon would be a category error. So A2A and A2G genuinely
+    use different models here, deliberately.
+
+    ✅ **The free-space choice has direct empirical support.** Measurement-based
+    A2A modelling in built-up areas finds that "when both UAVs are higher than
+    50 m, the path loss of A2A channels can be described with a free-space
+    propagation model" (Path Loss Analysis for Low-Altitude Air-to-Air
+    Millimeter-Wave, arXiv:2301.12229). ⚠️ This project's altitude band is
+    **40-80 m**, so the lower end sits just under that 50 m finding -- worth a
+    sentence in the methodology rather than silence.
+
+    TODO(verify): `blockage_db = 20.0` is an **assumed** constant, not a measured
+    or cited one, and it was not previously marked. A blocked A2A ray at these
+    altitudes is roof-edge diffraction, whose loss depends on the Fresnel
+    parameter and realistically spans ~10-40 dB. 20 dB is a plausible mid-range
+    choice and RQ1's F1 rung rests on it, so it needs either a citation or a
+    sensitivity check before the methodology chapter quotes it.
+
     `occluded` is a bool tensor broadcastable to `d_m`.
     """
     return fspl_db(d_m, fc_ghz) + blockage_db * occluded.to(d_m.dtype)
@@ -105,18 +128,58 @@ def pathloss_a2g_umi_av_db(
 ) -> torch.Tensor:
     """Air-to-ground path loss, 3GPP TR 36.777 UMi-AV.
 
-    Valid for UAV heights of roughly 22.5-300 m -- the regime this thesis
-    operates in, and precisely the regime TR 38.901 UMi excludes.
+    Valid for UAV heights of 22.5-300 m -- the regime this thesis operates in,
+    and precisely the regime TR 38.901 UMi excludes (it stops at 22.5 m).
 
-        LoS  : 30.9 + (22.25 - 0.5*log10(h)) * log10(d3d) + 20*log10(fc)
-        NLoS : max(LoS, 32.4 + (43.2 - 7.6*log10(h)) * log10(d3d) + 20*log10(fc))
+        LoS  : max(FSPL, 30.9 + (22.25 - 0.5*log10(h)) * log10(d3d) + 20*log10(fc))
+        NLoS : max(LoS,  32.4 + (43.2  - 7.6*log10(h)) * log10(d3d) + 20*log10(fc))
 
-    TODO(verify): these coefficients must be checked against the actual 3GPP
-    TR 36.777 document (UMi-AV table) before anything derived from them appears
-    in the methodology chapter. They are self-consistent and give physically
-    sensible values (LoS lands ~1 dB above FSPL at 100 m altitude, NLoS ~17 dB
-    above LoS) but sensible is not the same as correct. Shadow fading is not
-    modelled here; add it as a separate zero-mean term if the thesis needs it.
+    `h` is the AERIAL UE height in metres, `d3d` the 3-D separation in metres,
+    `fc` in **GHz**. The caller passes `h = max(z_i, z_j)`, which for a
+    drone<->MCV link is the drone's altitude -- the aerial UE, as the model
+    intends.
+
+    ## Verification status (2026-08-26) -- ⚠️ PARTIAL, do not treat as closed
+
+    Checked against secondary sources rather than against the 3GPP document
+    itself, because the document is paywalled/unreachable from here. What that
+    established:
+
+    * ✅ **LoS, all constants.** The formula
+      `max(FSPL, 30.9 + (22.25 - 0.5 log10(h)) log10(d3D) + 20 log10(fc))` is
+      quoted verbatim in the literature, matching intercept, slope, height
+      correction and frequency term.
+    * ✅ **NLoS slope and height correction.** Two independent sources give the
+      NLoS path-loss exponent as `4.32 - 0.76 log10(h)`, i.e. `43.2 - 7.6
+      log10(h)` in dB-per-decade form. Matches.
+    * ⚠️ **NLoS intercept `32.4` is NOT independently confirmed**, and there is a
+      specific reason for suspicion: `32.4` is also the intercept of TR 38.901's
+      *terrestrial* UMi Street-Canyon **LoS** model
+      (`32.4 + 21 log10(d3D) + 20 log10(fc)`), which is exactly the sort of
+      neighbouring constant a transcription slip lands on. **This is the one
+      number a human still has to read off TR 36.777's UMi-AV table.**
+
+    Internal consistency checks that do pass: NLoS >= LoS everywhere (min margin
+    +1.5 dB over d in [1, 1585] m); LoS sits 1.1-2.7 dB above FSPL across the
+    operating band, rising with distance as a canyon model should; NLoS sits
+    16-30 dB above LoS.
+
+    ⚠️ **Frequency extrapolation.** TR 36.777 is an LTE study item; using it at
+    3.5 GHz relies on the `20 log10(fc)` term scaling correctly outside the bands
+    it was fitted in. Defensible and standard, but state it in the methodology
+    rather than leaving it implicit.
+
+    Shadow fading is **not** modelled here (TR 36.777 specifies it per scenario);
+    add it as a separate zero-mean term if the thesis needs it. Neither is the
+    TR 36.777 LOS *probability* model -- this project ray-traces LoS against real
+    LoD2 geometry instead, which is deliberate: RQ1 cannot ablate occlusion if
+    occlusion is a random variable.
+
+    ⚠️ The `max(FSPL, .)` on the LoS branch is **provably vacuous in this
+    scenario** and is present for exactness only. FSPL exceeds the UMi-AV LoS
+    expression only below 9.5-18.7 m (depending on `h`), while the 40 m altitude
+    floor puts every drone<->MCV separation above 40 m by construction. Measured
+    minimum over a rollout: 38 m at `h_min`, still clear of the crossover.
     """
     d = d_3d_m.clamp_min(1.0)
     h = h_uav_m.clamp_min(22.5)
@@ -124,7 +187,7 @@ def pathloss_a2g_umi_av_db(
     log_h = torch.log10(h)
     fc_term = 20.0 * math.log10(fc_ghz)
 
-    pl_los = 30.9 + (22.25 - 0.5 * log_h) * log_d + fc_term
+    pl_los = torch.maximum(fspl_db(d, fc_ghz), 30.9 + (22.25 - 0.5 * log_h) * log_d + fc_term)
     pl_nlos = torch.maximum(pl_los, 32.4 + (43.2 - 7.6 * log_h) * log_d + fc_term)
     return torch.where(los.to(torch.bool), pl_los, pl_nlos)
 

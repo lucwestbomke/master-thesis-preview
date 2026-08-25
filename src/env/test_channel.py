@@ -296,3 +296,53 @@ def test_batched_pipeline_end_to_end():
     assert c.shape == (b, m, m)
     assert torch.isfinite(c).all()
     assert torch.all(c >= 0.0)
+
+
+def test_umi_av_los_has_the_free_space_floor_the_standard_specifies():
+    """TR 36.777's UMi-AV LoS is `max(FSPL, ...)`, and the max must be real.
+
+    At very short range the canyon expression drops below free space, which is
+    unphysical -- no propagation beats vacuum. The floor was missing until the
+    2026-08-26 verification pass; it is asserted here so it cannot quietly go
+    again.
+    """
+    d = torch.tensor([2.0, 5.0])  # well inside the crossover
+    h = torch.full_like(d, 60.0)
+    los = pathloss_a2g_umi_av_db(d, h, torch.ones_like(d, dtype=torch.bool))
+    assert torch.all(los >= fspl_db(d, 3.5) - 1e-6), "LoS dipped below free space"
+
+
+def test_the_free_space_floor_is_vacuous_above_the_altitude_floor():
+    """⚠️ Pins *why* adding the floor moved no measured number.
+
+    The floor binds only below ~9.5-18.7 m of 3-D separation, and `ALT_MIN_M`
+    puts every drone above that height, so a drone<->MCV ray is at least
+    `ALT_MIN_M` long by construction. If the altitude band is ever lowered this
+    test fails, which is the signal that the golden trace legitimately moves.
+    """
+    from .core import ALT_MAX_M, ALT_MIN_M
+
+    d = torch.linspace(ALT_MIN_M, 1500.0, 200)
+    for h in (ALT_MIN_M, ALT_MAX_M):
+        hh = torch.full_like(d, float(h))
+        los = pathloss_a2g_umi_av_db(d, hh, torch.ones_like(d, dtype=torch.bool))
+        canyon = 30.9 + (22.25 - 0.5 * math.log10(h)) * torch.log10(d) + 20.0 * math.log10(3.5)
+        assert torch.allclose(los, canyon, atol=1e-4), (
+            f"the FSPL floor binds at h={h} m -- the altitude band no longer "
+            "guarantees it is vacuous, and every path-loss number must be re-derived"
+        )
+
+
+def test_a2a_and_a2g_are_genuinely_different_models():
+    """⛔ TR 36.777 is air-to-ground ONLY.
+
+    Applying a street-canyon model to a drone<->drone ray that never enters the
+    canyon would be a category error, so the two paths must not converge. A
+    clear A2A link is free space; a clear A2G link carries the canyon excess.
+    """
+    d = torch.tensor([500.0])
+    clear = torch.tensor([False])
+    a2a = pathloss_a2a_db(d, clear, fc_ghz=3.5)
+    a2g = pathloss_a2g_umi_av_db(d, torch.tensor([60.0]), ~clear, fc_ghz=3.5)
+    assert a2a.item() == pytest.approx(fspl_db(d, 3.5).item(), abs=1e-6)
+    assert a2g.item() > a2a.item() + 1.0, "A2G must not collapse onto free space"

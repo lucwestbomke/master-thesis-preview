@@ -23,6 +23,64 @@ co-located test files.
 > them against the actual 3GPP document before citing. Same for the rotary-wing
 > energy constants.
 
+## 📏 TR 36.777 verification status — 2026-08-26, PARTIAL
+
+The `TODO(verify)` on `channel.py`'s UMi-AV coefficients was worked, against
+secondary literature rather than the 3GPP document (which is not reachable from
+the dev environment). Result: **three of the four constants corroborated, one
+still open.** ⛔ The marker stays until a human reads the UMi-AV table.
+
+| constant | status |
+|---|---|
+| LoS intercept **30.9** | ✅ corroborated |
+| LoS slope **22.25 − 0.5·log₁₀(h)** | ✅ corroborated |
+| NLoS slope **43.2 − 7.6·log₁₀(h)** | ✅ corroborated, two independent sources (quoted as `4.32 − 0.76·log₁₀(h)`) |
+| **NLoS intercept 32.4** | ⚠️ **NOT confirmed** |
+
+⚠️ The open one has a specific reason for suspicion, which is why it is worth a
+human's five minutes: **32.4 is also the intercept of TR 38.901's *terrestrial*
+UMi Street-Canyon LoS model** (`32.4 + 21·log₁₀(d₃D) + 20·log₁₀(f_c)`). That is
+exactly the neighbouring constant a transcription slip lands on. It is equally
+possible the two genuinely coincide — but it cannot be assumed.
+
+**What the pass also fixed and found:**
+
+1. ☠️ **The LoS branch was missing its `max(FSPL, ·)`.** TR 36.777 floors LoS at
+   free space; the code did not, so at short range it returned a path loss
+   *below vacuum*. Added. 📏 **No measured number moved**, and provably so: the
+   floor binds only below 9.5–18.7 m of 3-D separation while `ALT_MIN_M` = 40 m
+   makes every drone↔MCV ray at least 40 m long. `test_channel.py` pins that
+   vacuity against `ALT_MIN_M`, so lowering the altitude band trips it.
+2. ⚠️ **Frequency extrapolation.** TR 36.777 is an **LTE** study item; using it
+   at 3.5 GHz rests on the `20·log₁₀(f_c)` term scaling outside the bands it was
+   fitted in. Standard and defensible — but say it in Chapter 3 rather than
+   leaving it implicit.
+3. ⚠️ **`blockage_db = 20.0` in the A2A model is an assumed constant that was
+   never marked.** It now carries its own `TODO(verify)`. RQ1's F1 rung rests on
+   it, and roof-edge diffraction realistically spans ~10–40 dB, so it needs a
+   citation or a sensitivity sweep before the methodology quotes it.
+4. Docstring correction: the claimed "NLoS ~17 dB above LoS" measures **15.0 dB**
+   at the quoted geometry (16–30 dB across the operating band).
+
+**Internal consistency, all passing:** NLoS ≥ LoS everywhere (min margin
++1.5 dB); LoS sits 1.1–2.7 dB above FSPL across the band, rising with distance as
+a canyon model should; the hand-computed tests reproduce both branches to 1e-3.
+
+### ✅ A2A is a different model, deliberately, and that is correct
+
+TR 36.777 covers **air-to-ground only** — an aerial UE against a ground-mounted
+eNodeB. It says nothing about drone↔drone links where both ends are above
+rooftop, and applying a street-canyon model to a ray that never enters the canyon
+would be a category error. `pathloss_a2a_db` is therefore FSPL + a blockage
+penalty, dispatched by `core.is_a2a`, and `test_channel.py` asserts the two paths
+cannot converge.
+
+📏 **The free-space choice has direct empirical support:** measurement-based A2A
+modelling in built-up areas finds that when both UAVs are above **50 m**, A2A
+path loss is well described by free space (arXiv:2301.12229). ⚠️ This project's
+band is **40–80 m**, so the bottom of it sits just under that finding — one
+sentence in the methodology, not silence.
+
 ## SINR — linear domain, with intra-swarm interference
 ```
 SINR_lin(i→j) = P_rx(i→j) / ( Σ_{k∉{i,j}, k active} P_rx(k→j) + P_jam(j) + N0 )

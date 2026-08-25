@@ -419,6 +419,13 @@ the freeze, when there is no time. Read the tag before you argue with the entry.
   so that it *cannot* see the rung.
 - ⛔ 🔒 **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
   and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
+  📏 **TR 36.777 was worked on 2026-08-26 and is 3/4 closed**: the LoS intercept
+  and slope and the NLoS slope are corroborated; **the NLoS intercept `32.4` is
+  not**, and it happens to equal TR 38.901's *terrestrial* UMi LoS intercept,
+  which is the neighbouring constant a transcription slip lands on. One human
+  reading of the UMi-AV table closes it — [`docs/PHYSICS.md`](docs/PHYSICS.md).
+  The same pass added a `TODO(verify)` to A2A's `blockage_db = 20.0`, which had
+  never been marked and which RQ1's F1 rung rests on.
 
 ---
 
