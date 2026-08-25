@@ -32,6 +32,27 @@ from src.viz.episode import OUTDIR, animate, figure, fly
 from src.viz.scene import inside_any_box, load_artefact
 
 POLICIES = ("random", "waypoint", "b0-geodesic", "b0", "b0-oracle")
+
+
+def compare_set(policy: str) -> tuple[str, ...]:
+    """The policies `--compare` draws, given whatever `--policy` was asked for.
+
+    ⚠️ `--compare` used to be `policies = POLICIES`, which **silently discarded
+    `--policy`**. So
+
+        render_episode.py --policy runs/<name>/checkpoint.pt --compare --route 12
+
+    -- the exact command `BLOCK_G.md` recommends for turning an aggregate into a
+    mechanism -- rendered the five scripted baselines and *not the checkpoint*,
+    reporting success for all five. The learned policy is the one thing that
+    command exists to look at.
+
+    A checkpoint path is now appended to the baseline set rather than replacing
+    or being replaced by it, because "compare" means *against* the baselines.
+    """
+    return POLICIES if policy in POLICIES else (*POLICIES, policy)
+
+
 #: Block F rungs, plus the explicitly-named building-free variant. Same
 #: policy, same route, five worlds -- the visual half of Block F.
 FIDELITIES = ("F0", "F0-nogeo", "F1", "F2", "F3", "F4")
@@ -96,7 +117,7 @@ def main() -> None:
 
     art = load_artefact()
     route = worst_route(art) if a.worst else min(a.route, len(art["routes"]) - 1)
-    policies = POLICIES if a.compare else (a.policy,)
+    policies = compare_set(a.policy) if a.compare else (a.policy,)
     rungs = FIDELITIES if a.compare_fidelity else (a.fidelity,)
 
     print(f"route #{route}, N={a.drones}, seed {a.seed}")
