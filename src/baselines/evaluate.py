@@ -21,6 +21,7 @@ host. `docs/AGENTS.md` forbids `.item()` in the hot loop and this is one.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -76,6 +77,41 @@ class RolloutMetrics:
     # failure attribution: of the steps that were not mission-capable, why
     fail_no_observation: Tensor
     fail_link: Tensor
+    # --- role emergence -----------------------------------------------------
+    #
+    # Added 2026-08-25. Nothing in this harness could distinguish "one drone
+    # committed to observing and four relayed behind it" from "five drones did
+    # the same mediocre thing at the same radius" -- and that is precisely the
+    # difference the Block G diagnosis turns on. Measured: given a sightline the
+    # GNN converts it as well as B0 does (0.620 vs 0.617), but conditioned on
+    # observing its chain is indistinguishable from a RANDOM policy's (1.91 hops
+    # vs 1.83, B0 2.26). The swarm learned to fly at the target and nothing about
+    # relaying. These four say whether that is a role failure.
+    #
+    # ⛔ These are DIAGNOSTICS, computed by the evaluator from `env.drone_pos`.
+    # That is allowed here and forbidden in `b0.py` -- B0 is a policy and must
+    # see only `obs["flat"]`; the evaluator is a measuring instrument.
+    observer_share_max: Tensor  # share of observing steps held by the top observer
+    role_entropy: Tensor  # normalised entropy of observer identity, 0 = one drone owns it
+    relay_entropy: Tensor  # same for chain membership
+    standoff_gap_m: Tensor  # median drone-HVT range minus the closest drone's
+
+    # ⚠️ `standoff_gap_m` MUST be read together with `role_entropy`, never alone.
+    # A large gap means either "one drone went in and the rest held back" or
+    # "the drones are scattered at random". Measured at stage 1, which separates
+    # the three cases cleanly:
+    #
+    #     policy        role_entropy   standoff_gap_m   reading
+    #     B0                0.0            88.6         one observer, rest held back
+    #     MAPPO MLP         0.2            34.1         an observer emerges, nobody
+    #                                                   drops back to relay
+    #     random            0.5           163.7         no structure -- pure scatter
+    #
+    # So the learned policy is much closer to B0 than to random on WHO observes,
+    # and closer to neither on WHERE the others go: it bunches. That is the
+    # Block G diagnosis in two numbers -- **the observer role partly emerges and
+    # the relay role does not** -- and it matches the hop evidence exactly
+    # (1.9 hops conditioned on observing, against random's 1.83 and B0's 2.26).
     meta: dict = field(default_factory=dict)
 
     def summary(self) -> dict[str, float]:
@@ -113,6 +149,10 @@ class RolloutMetrics:
             "reroot_lead",
             "fail_no_observation",
             "fail_link",
+            "observer_share_max",
+            "role_entropy",
+            "relay_entropy",
+            "standoff_gap_m",
         ):
             v = getattr(self, name)
             ok = torch.isfinite(v)
@@ -206,6 +246,11 @@ def rollout(
     # it became viable reacted.
     prev_path = torch.zeros(b, n, dtype=torch.bool, device=dev)
     viable_run = torch.zeros(b, n, device=dev)
+    # Role emergence. `obs_count[e, i]` = steps drone i was THE observer of
+    # episode e; `path_count[e, i]` = steps it carried the chain.
+    obs_count = torch.zeros(b, n, device=dev)
+    path_count = torch.zeros(b, n, device=dev)
+    standoff_sum = torch.zeros(b, device=dev)
     seen_comp = torch.zeros(b, 1 << N_MAX, device=dev)
     pow2 = (2 ** torch.arange(n, device=dev)).float()
 
@@ -308,6 +353,20 @@ def rollout(
         lead_total += changed.float() * (succ_run - 1.0).clamp_min(0.0)
         prev_obs_idx = torch.where(cur >= 0, cur, prev_obs_idx)
 
+        # --- role emergence -------------------------------------------------
+        # Reuses `cur` -- the same observer identity `handoffs` and the tenure
+        # figure are built from -- so all of them agree by construction rather
+        # than by coincidence. `covered` gates it: a step where nobody sees has
+        # no observer to attribute.
+        obs_count.scatter_add_(1, cur.clamp_min(0).unsqueeze(-1), covered.float().unsqueeze(-1))
+        path_count += path.float()
+        # How much further back the rest of the swarm sits than its closest
+        # member. Differentiation shows here as a LARGE gap -- one drone in at
+        # ~79 m and the others held back to relay -- while a clustered or
+        # uniformly standing-off swarm shows a small one.
+        d_hvt = (env.drone_pos - env.hvt_pos.unsqueeze(1)).norm(dim=-1)
+        standoff_sum += d_hvt.median(dim=-1).values - d_hvt.min(dim=-1).values
+
         if on_reset is not None:
             # Unconditional: a masked reset is a no-op, and `if done.any()`
             # would be a host sync in disguise.
@@ -315,6 +374,22 @@ def rollout(
 
     t_f = float(steps)
     late_f = float(steps - late_from)
+
+    def _norm_entropy(counts: Tensor) -> Tensor:
+        """Entropy of a per-drone share, divided by `log(n)` so it lands in [0, 1].
+
+        **0 = one drone owns the role. 1 = every drone holds it equally**, which
+        is the signature of no role at all. Normalising by `log(n)` is what makes
+        it comparable across `N in {3, 5, 8}` -- without it the RQ2 transfer
+        columns would be reporting swarm size rather than behaviour.
+        """
+        if n < 2:
+            return torch.zeros_like(counts[:, 0])
+        share = counts / counts.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+        entropy = -(share * share.clamp_min(1e-12).log()).sum(dim=-1)
+        return entropy / math.log(n)
+
+    obs_total = obs_count.sum(dim=-1)
     return RolloutMetrics(
         mission_capable=(acc["capable"] / t_f).cpu(),
         observed=(acc["observed"] / t_f).cpu(),
@@ -341,6 +416,14 @@ def rollout(
         reroot_lead=(acc["join_lead"] / acc["joins"].clamp_min(1)).cpu(),
         fail_no_observation=(acc["fail_obs"] / t_f).cpu(),
         fail_link=(acc["fail_link"] / t_f).cpu(),
+        observer_share_max=torch.where(
+            obs_total > 0,
+            obs_count.max(dim=-1).values / obs_total.clamp_min(1e-9),
+            torch.zeros_like(obs_total),
+        ).cpu(),
+        role_entropy=_norm_entropy(obs_count).cpu(),
+        relay_entropy=_norm_entropy(path_count).cpu(),
+        standoff_gap_m=(standoff_sum / t_f).cpu(),
         meta={"steps": steps, "num_envs": b, "num_drones": n, "alt_ceiling_m": ALT_MAX_M},
     )
 

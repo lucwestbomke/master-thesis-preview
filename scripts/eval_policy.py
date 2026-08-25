@@ -61,6 +61,12 @@ REPORT = (
     # The clearest single number for "does anyone commit?", and it is what
     # separates the learned policies from B0 by an order of magnitude.
     "observer_tenure",
+    # Role emergence (Block G): normalised entropy of observer identity, 0 = one
+    # drone owns the role and 1 = every drone holds it equally. `standoff_gap_m`
+    # is how much further back the swarm sits than its closest member -- large
+    # means one drone went in and the rest held back to relay.
+    "role_entropy",
+    "standoff_gap_m",
 )
 
 
