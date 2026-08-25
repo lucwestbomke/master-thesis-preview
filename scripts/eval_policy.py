@@ -56,6 +56,8 @@ _AS_PERCENT = frozenset(
         "chain_occluded",
         "capable_last_third",
         "observed_last_third",
+        "capable_share_high",
+        "capable_share_low",
     }
 )
 
@@ -88,6 +90,9 @@ REPORT = (
     "observer_range_m",
     "capable_last_third",
     "observer_range_last_third",
+    "off_axis_m",
+    "capable_share_high",
+    "capable_share_low",
 )
 
 

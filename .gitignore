@@ -36,3 +36,5 @@ data/cache/
 cache/
 *.graphml
 *.gpkg
+
+*.mp4

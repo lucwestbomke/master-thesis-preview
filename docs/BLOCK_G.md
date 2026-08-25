@@ -795,6 +795,64 @@ never been scored on the statistic that now defines the failure.** The
 checkpoints exist; re-scoring them is free and must happen before recurrence
 stays dropped.
 
+### 🔍 G11 — what route 12 actually looks like, and it is not what the aggregates said
+
+☠️ **First, a correction to how this was ever diagnosed.** `render_episode.py`'s
+`--compare` discarded `--policy`, so the command this file recommends for
+"turning an aggregate into a mechanism" had been rendering the five scripted
+baselines and never the checkpoint. Fixed; `src/viz/test_render.py` (previously an
+empty file) pins it.
+
+**Route 12, F4, N = 5, seed 0 — same route, same seed, side by side:**
+
+| | capable | observed | hops | chain occluded | handoffs | e2e p5 |
+|---|---|---|---|---|---|---|
+| B0 | 97.2 % | 97.2 % | med 2, max 3 | 0.2 % | **1** | 26.9 |
+| `waypoint` (oracle-fed) | 40.5 % | 41.8 % | med 2 | 1.3 % | 2 | 0.0 |
+| **GNN, g8-ff-shipped-s0** | **80.8 %** | **82.5 %** | **med 2, max 3** | **2.2 %** | **9** | **0.0** |
+| random | 13.2 % | 35.5 % | med 1 | 24.3 % | 0 | 0.0 |
+
+⚠️ **The learned policy scores 80.8 % here against a 40.7 % aggregate**, with
+B0-like chain structure — median 2 hops, max 3, 2.2 % occluded. So the flat
+statement "the swarm never builds a chain" is **wrong**: on this route it builds
+exactly the right one. ⚠️ Route 12 is B0's *strong* route (97.2 %), so read this
+as "route difficulty varies a lot", not as proof of bimodality — B0's own
+`capable_share_high` is only 25 %.
+
+**And the figure shows something no aggregate in this block could.**
+
+📏 **B0's drone tracks are confined to the HVT corridor.** The learned policy's
+**sprawl across the entire map** — large loops out past x = −700 m, into the
+western half the HVT never enters. Five drones, and several are executing long
+excursions far from any part of the mission.
+
+The observer panel says the same in a different way: B0's is a flat purple line
+(drone 3, from t = 12 s to the end, one handoff). The learned policy's is mostly
+drone 2 — it *does* commit on this route — but broken nine times, and the grey
+"can see" bars show long stretches where only one drone has the target at all.
+
+**The hypothesis this suggests, and it is new.** The non-observer drones are not
+holding station. `core` integrates a double integrator **with no drag**, so
+"output nothing" does not mean "stop" — holding position is an active control
+problem the policy has not solved. Idle drones therefore drift into long loops,
+and a drone 1 km off-axis cannot be recruited when the chain needs to extend.
+That would explain why the *aggregate* chain looks random while a good route
+looks like B0.
+
+**Measured immediately, as `off_axis_m`** — mean distance from a drone to the
+MCV–HVT segment, i.e. *is the swarm where the mission is*. Stage 4 reference
+(MPS, 2 seeds — a reference, not a reported number):
+
+| | off-axis | capable > 80 % | capable < 20 % |
+|---|---|---|---|
+| B0 | **104.4 m [1.1]** | 25.0 % | 9.4 % |
+| random | **396.8 m [8.0]** | 0.0 % | 87.5 % |
+
+⚠️ The learned policies' `off_axis_m` is **not yet measured** — it is one free
+re-score of the existing checkpoints, and it is the direct test of the hypothesis
+above. If it sits near random's 397 m rather than B0's 104 m, station-keeping is
+the deficit and it is a *control* problem, not a coordination or credit one.
+
 ### 📏 G5 / stage B — RQ2's first eval-split answer
 
 Each architecture at **its own** equal-budget winner, eval split, 5 seeds:

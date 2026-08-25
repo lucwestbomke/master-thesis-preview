@@ -109,6 +109,20 @@ class RolloutMetrics:
     capable_last_third: Tensor
     observed_last_third: Tensor
     observer_range_last_third: Tensor
+    #: (n_episodes,) mean distance from a drone to the MCV--HVT segment, over
+    #: drones and steps. **The swarm's useful work happens near that line** --
+    #: an observer at one end, relays strung along it -- so this is "is the
+    #: swarm where the mission is". Rendering route 12 showed B0's tracks
+    #: confined to the HVT corridor while the learned policy's sprawled across
+    #: the whole map, including the half the HVT never enters; no aggregate in
+    #: this block could see that.
+    off_axis_m: Tensor
+    #: Share of episodes scoring above 80 % / below 20 % mission-capable. ⚠️ The
+    #: mean hides shape: the same policy that averages 40.7 % scored **80.8 %**
+    #: on route 12, near B0's 97.2 %. These say whether it is uniformly mediocre
+    #: or solves some routes outright and fails others.
+    capable_share_high: Tensor
+    capable_share_low: Tensor
 
     # ⚠️ `standoff_gap_m` MUST be read together with `role_entropy`, never alone.
     # A large gap means either "one drone went in and the rest held back" or
@@ -168,6 +182,10 @@ class RolloutMetrics:
             "capable_last_third",
             "observed_last_third",
             "observer_range_last_third",
+            "off_axis_m",
+            "capable_share_high",
+            "capable_share_low",
+            "battery_end",
             "role_entropy",
             "relay_entropy",
             "standoff_gap_m",
@@ -270,6 +288,7 @@ def rollout(
     path_count = torch.zeros(b, n, device=dev)
     standoff_sum = torch.zeros(b, device=dev)
     range_sum = torch.zeros(b, device=dev)
+    off_axis_sum = torch.zeros(b, device=dev)
     range_late = torch.zeros(b, device=dev)
     covered_late = torch.zeros(b, device=dev)
     capable_late = torch.zeros(b, device=dev)
@@ -392,6 +411,16 @@ def rollout(
         # The range of the drone that actually holds the ray -- B0 79 m, learned
         # ~291 m. Accumulated only over steps where somebody sees, so it is the
         # observer's stand-off and not an average over blind steps.
+        # Distance from each drone to the MCV--HVT segment, clamped to the
+        # segment rather than the infinite line so a drone beyond either end is
+        # measured from that end.
+        axis = env.hvt_pos - env.mcv_pos  # (B, 3)
+        rel = env.drone_pos - env.mcv_pos.unsqueeze(1)  # (B, N, 3)
+        t_par = (
+            (rel * axis.unsqueeze(1)).sum(-1) / axis.pow(2).sum(-1, keepdim=True).clamp_min(1.0)
+        ).clamp(0.0, 1.0)
+        off_axis_sum += (rel - t_par.unsqueeze(-1) * axis.unsqueeze(1)).norm(dim=-1).mean(dim=-1)
+
         obs_range = d_hvt.gather(1, cur.clamp_min(0).unsqueeze(-1)).squeeze(-1)
         range_sum += obs_range * covered.float()
         if t >= late_from:
@@ -470,6 +499,9 @@ def rollout(
         capable_last_third=(capable_late / late_f).cpu(),
         observed_last_third=(observed_late / late_f).cpu(),
         observer_range_last_third=_mean_where(range_late, covered_late).cpu(),
+        off_axis_m=(off_axis_sum / t_f).cpu(),
+        capable_share_high=(acc["capable"] / t_f > 0.8).float().cpu(),
+        capable_share_low=(acc["capable"] / t_f < 0.2).float().cpu(),
         meta={"steps": steps, "num_envs": b, "num_drones": n, "alt_ceiling_m": ALT_MAX_M},
     )
 
