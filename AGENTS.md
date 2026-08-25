@@ -3,6 +3,29 @@
 Entry point for any agent or human working in this repo. Kept deliberately short;
 detail lives in `docs/` and is read **on demand**.
 
+## How to read these documents
+
+Every claim in `docs/` and here is one of three kinds, and they are **not
+equally binding**. Conflating them is how a wrong guess ends up carrying the
+authority of a measurement — which cost this project a week when a misattributed
+diagnosis sat in `BLOCK_G.md` looking exactly like a result.
+
+| tag | means | how to change it |
+|---|---|---|
+| 📏 **MEASURED** | a number that came out of a script, with device and seed count | measure it better, then overwrite. Data is not a rule |
+| 🔒 **CONSTRAINT** | protects an RQ's interpretability, not the model's score | change it **deliberately**, in `DECISIONS.md`, and re-derive what it invalidates |
+| 🔧 **PROVISIONAL** | a default nobody has tested | change it freely, on evidence, no ceremony |
+
+The asymmetry that justifies the middle row: **you can always retrain a model;
+you cannot retroactively un-confound an experiment.** Breaking a 🔒 does not make
+the policy worse — it makes the resulting number uninterpretable, and the runs
+have to be redone. A 🔧 costs twenty minutes.
+
+⚠️ **Untagged prose is 🔧 by default.** If it mattered, someone would have
+measured it or written down what it protects.
+
+---
+
 ## Mission
 A swarm of `N` UAVs must simultaneously **observe** a moving ground High-Value
 Target (HVT) in Frankfurt, **relay** the sensor feed to a Mobile Command Vehicle
@@ -243,70 +266,118 @@ mean ± std — RL returns are not normally distributed. Never report single run
 
 ---
 
+## 🔧 What you may change freely, right now
+
+The 🔒 list below is short on purpose. Everything here is untested default and
+carries **no** methodological weight — change it on evidence without ceremony,
+and do not write a `DECISIONS.md` entry unless the answer is interesting.
+
+| | current | note |
+|---|---|---|
+| recurrence: GRU vs LSTM, `rnn_hidden`, `--seq-len` | GRU, 128, 16 | GRU is the MARL default (Yu et al. 2022), never compared here |
+| trunk widths | 232 (MLP) / 128 (relational) / 256 (critic) | only the ±20 % parity between rungs is 🔒 |
+| learning rate, `learning_epochs`, `gae_lambda` | 3e-4, 4, 0.95 | LR is fixed so cadence is not confounded with it, not because 3e-4 is right |
+| `min_log_std`, `entropy_loss_scale` | 0.2, 0.0 | the floor was inert at stage 1 — σ never reached it |
+| `num_envs` / `rollouts` / `mini_batches` | the sweep's `deep` | 📏 `deep` won, but the grid confounds two axes |
+| curriculum boundaries and mix | (0.15, 0.35, 0.60), 20 % | explicitly provisional; find it, freeze it, then it becomes 🔒 |
+| **everything inside `Φ`** | see below | PBRS proves none of it can move the optimum |
+
+### ⚠️ `Φ`'s internal weights are free, and nobody has touched them
+
+`REWARD.md` says *"the scale of `Φ` is free… every other weight changes the
+objective — ⛔ sweep nothing but `λ`"*, which reads as though `w_approach`,
+`w_observe` and `w_link` were locked. **They are not.** They sit *inside* the
+potential:
+
+```
+Φ = k · [ w_a·Φ_approach + w_o·Φ_observe + w_l·Φ_link ]
+```
+
+and Ng, Harada & Russell's proof holds for **any** `Φ`, so any setting of them is
+optimum-preserving for exactly the same reason `k` is. `REWARD.md` itself calls
+`0.25 / 0.35 / 0.40` *"suggested"*. The ⛔ applies to the **objective** weights
+(`mission`, `idle`, `energy`, `battery_variance`, `effort`), where only `λ` is
+sweepable.
+
+So the free reward surface is larger than the docs imply: `k`, `d_ref_m`,
+`tau_clearance_m`, `tau_capacity_mbps`, `w_approach`, `w_observe`, `w_link`,
+`w_hold`, `d_hold_m` — nine knobs, none of which can change what "success"
+means. Given the measured deficit is observation persistence, `w_observe`
+against `w_link` is an obvious untried lever.
+
+---
+
 ## Never do these
 
-- ⛔ **Reintroduce transmit power as an action.** Three framings, three nulls —
+These are not all the same kind of rule, and the difference decides what happens
+if you break one. **📏 entries are measured** — someone ran the script, and the
+number is the argument; overturn them by measuring better. **🔒 entries protect a
+research question** — breaking one does not make the policy worse, it makes the
+resulting number uninterpretable, and the affected runs have to be redone after
+the freeze, when there is no time. Read the tag before you argue with the entry.
+
+- ⛔ 📏 **Reintroduce transmit power as an action.** Three framings, three nulls —
   [`docs/NEGATIVE_RESULTS.md`](docs/NEGATIVE_RESULTS.md). Action space is motion
   only (3-dim); Ptx is fixed at 30 dBm. E4 reproduces the null deliberately.
-- ⛔ **Raise the Ptx ceiling.** At 40 dBm a *blocked* A2A link carries 15 Mbps
+- ⛔ 📏 **Raise the Ptx ceiling.** At 40 dBm a *blocked* A2A link carries 15 Mbps
   over 2.8 km — one drone spans the map and the relay chain becomes pointless.
-- ⛔ **Use channel fidelity as a curriculum axis.** It is RQ1's independent
+- ⛔ 🔒 **Use channel fidelity as a curriculum axis.** It is RQ1's independent
   variable. Same reasoning forbids ramping building density.
-- ⛔ **Use `SAGEConv`** for the GNN rung. It cannot take edge features, so it
+- ⛔ 🔒 **Use `SAGEConv`** for the GNN rung. It cannot take edge features, so it
   silently collapses the GNN into DeepSets and RQ2 measures nothing.
-- ⛔ **Terminate the episode on mission failure.** The policy learns never to
+- ⛔ 📏 **Terminate the episode on mission failure.** The policy learns never to
   acquire, and a random initial policy never reaches the tracking phase.
-- ⛔ **Sweep more than `λ`.** Other weights are pinned by behavioural orderings
+- ⛔ 🔒 **Sweep more than `λ`.** Other weights are pinned by behavioural orderings
   in [`docs/REWARD.md`](docs/REWARD.md).
-- ⛔ **Raise the altitude ceiling above 80 m.** It is not a comfort margin — it
+- ⛔ 📏 **Raise the altitude ceiling above 80 m.** It is not a comfort margin — it
   is where the scenario stops being a swarm problem. A best-placed *single* drone
   is mission-capable 3.3 % of the time at 80 m, 23 % at 100 m and 57 % at 120 m,
   so raising it falsifies W1 ("one drone cannot do this"). Raising it also *weakens*
   RQ1: A2A blockage falls 31 % → 25 % → 10 % at 80 / 120 / 180 m. Measured:
   [`scripts/measure_envelope.py`](scripts/measure_envelope.py).
-- ⛔ **Move to mmWave.** It makes RQ1 trivial (mmWave is textbook
+- ⛔ 🔒 **Move to mmWave.** It makes RQ1 trivial (mmWave is textbook
   blockage-limited, so "occlusion matters" stops being a finding), needs
   beamforming and beam-pointing modelling that couples to the motion policy, is
   the wrong band for the tactical MANET radios Ptx is derived from, and would
   invalidate Block A, PHYSICS.md and Chapter 3 before the freeze. It belongs in
   future work, where it strengthens the discussion for free.
-- ⛔ **Lower the rate requirement back toward 5 Mbps.** It was 5, and at 5 the
+- ⛔ 📏 **Lower the rate requirement back toward 5 Mbps.** It was 5, and at 5 the
   link never binds: the chain carries 8× the bar, `mission_capable` becomes
   identical to `observed` for every policy, the N-scaling flattens to ~92 % at
   N = 3/5/8, and F4's rate-division rung does nothing. Raising it to 15 is what
   made the relay chain the binding constraint. [`docs/DECISIONS.md`](docs/DECISIONS.md).
-- ⛔ **Raise the altitude ceiling because W1 now permits it.** At 15 Mbps W1
+- ⛔ 📏 **Raise the altitude ceiling because W1 now permits it.** At 15 Mbps W1
   holds at every altitude, so it no longer pins the ceiling — but A2A occlusion
   still does, and that is the constraint RQ1's F1 rung rests on.
-- ⛔ **Promote the `measure_envelope.py` waypoint policy to B0.** It reads
+- ⛔ 🔒 **Promote the `measure_envelope.py` waypoint policy to B0.** It reads
   `env.hvt_pos` off the env, so it is oracle-fed, and it is untuned. It exists
   only so Block D's numbers had a regenerable ceiling. B0 is `src/baselines/b0.py`.
-- ⛔ **Set a fidelity flag directly.** `channel_occlusion`, `binary_capacity`,
+- ⛔ 🔒 **Set a fidelity flag directly.** `channel_occlusion`, `binary_capacity`,
   `channel_jammer` and `reuse_limit` are derived from `fidelity` and are not
   fields. `channel_occlusion=False, channel_jammer=True` is not on the ladder and
   nothing else would stop its number reaching a table.
-- ⛔ **Use `no_buildings` as "F0".** It removes buildings from the **world** —
+- ⛔ 📏 **Use `no_buildings` as "F0".** It removes buildings from the **world** —
   sensor and diagnostics included — which is `F0-nogeo`, a separate named
   condition. Measured: it scores 100 % mission-capable, is 82.3 % single-hop and
   runs 1.9× faster. Folding it into F0 deletes the relay problem.
-- ⛔ **Re-capture `data/f4_golden.pt.gz` to make a test pass.** It is the only
+- ⛔ 🔒 **Re-capture `data/f4_golden.pt.gz` to make a test pass.** It is the only
   record of what the env did before the ladder existed; re-capturing compares the
   new code against itself. A failure means the environment changed, and the
   question is which Block D or E number moved.
-- ⛔ **Compare a number measured on one device with one measured on another.**
+- ⛔ 🔒 **Compare a number measured on one device with one measured on another.**
   `torch.Generator` streams differ per device, so the same seed draws *different
   episodes* on MPS than on CPU. The physics is identical; the sample is not.
-- ⛔ **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
-- ⛔ **Train through `SwarmMultiAgentWrapper`.** It is the API-contract wrapper.
+- ⛔ 🔒 **Add heavy dependencies** (sim engines, RL frameworks) without flagging.
+- ⛔ 🔒 **Train through `SwarmMultiAgentWrapper`.** It is the API-contract wrapper.
   Reported runs go through `SharedPolicyWrapper` — see the Block G note above.
-- ⛔ **Turn `training_extras` on for a run that reports a number without saying
+- ⛔ 🔒 **Turn `training_extras` on for a run that reports a number without saying
   so.** It widens the `extras` contract `test_golden.py` pins. Training needs it;
   measurement scripts do not.
-- ⛔ **Use adaptive curriculum advancement in a reported run.** It hands the
+- ⛔ 🔒 **Use adaptive curriculum advancement in a reported run.** It hands the
   easier fidelity rungs more experience at the final stage and confounds RQ1
   unrecoverably. `curriculum.weights()` is a pure function of training progress
   so that it *cannot* see the rung.
-- ⛔ **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
+- ⛔ 🔒 **Cite constants an AI produced.** `TODO(verify)` markers in `channel.py`
   and `energy.py` mean exactly that — and now also the 120 m altitude ceiling.
 
 ---

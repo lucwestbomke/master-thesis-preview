@@ -114,6 +114,13 @@ class TrainConfig:
     # operates in: 8 m of closing pays 0.013. Measured stall distance under the
     # first full-mission pilot was 291 m against B0's 79 m.
     d_ref_m: float | None = None
+    # The "hold" factor on Phi_observe -- also inside Phi, so also
+    # optimum-preserving. It is the one knob aimed at the measured deficit
+    # (observer tenure 47 against B0's 265): every reward term is FLAT while the
+    # swarm is succeeding, so nothing distinguishes holding the sightline from
+    # drifting out of it. 0.0 = the shipped potential, bitwise.
+    w_hold: float | None = None
+    d_hold_m: float | None = None
     lambda_var: float | None = None
 
     log_every: int = 20
@@ -150,6 +157,10 @@ def build_weights(cfg: TrainConfig):
         changes["potential_scale"] = cfg.potential_scale
     if cfg.d_ref_m is not None:
         changes["d_ref_m"] = cfg.d_ref_m
+    if cfg.w_hold is not None:
+        changes["w_hold"] = cfg.w_hold
+    if cfg.d_hold_m is not None:
+        changes["d_hold_m"] = cfg.d_hold_m
     if cfg.lambda_var is not None:
         changes["battery_variance"] = cfg.lambda_var
     return replace(DEFAULT_WEIGHTS, **changes) if changes else DEFAULT_WEIGHTS
@@ -569,6 +580,12 @@ def main() -> None:
     ap.add_argument("--tau-capacity", type=float, default=None)
     ap.add_argument("--potential-scale", type=float, default=None)
     ap.add_argument("--d-ref", type=float, default=None)
+    ap.add_argument(
+        "--w-hold", type=float, default=None, help="Phi_observe hold factor; 0 = shipped"
+    )
+    ap.add_argument(
+        "--d-hold", type=float, default=None, help="range scale for the hold factor (m)"
+    )
     ap.add_argument("--lambda-var", type=float, default=None)
     ap.add_argument("--log-every", type=int, default=20)
     ap.add_argument("--checkpoint-every", type=int, default=0, help="iterations; 0 = final only")
@@ -618,6 +635,8 @@ def main() -> None:
             tau_capacity_mbps=a.tau_capacity,
             potential_scale=a.potential_scale,
             d_ref_m=a.d_ref,
+            w_hold=a.w_hold,
+            d_hold_m=a.d_hold,
             lambda_var=a.lambda_var,
             log_every=a.log_every,
             checkpoint_every=a.checkpoint_every,

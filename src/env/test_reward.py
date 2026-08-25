@@ -11,6 +11,7 @@ environment -- which also means these tests survive the batched env replacing th
 PettingZoo stub.
 """
 
+from dataclasses import replace
 from itertools import pairwise
 
 import pytest
@@ -18,6 +19,7 @@ import torch
 
 from .reward import (
     CAPACITY_THRESHOLD_MBPS,
+    DEFAULT_WEIGHTS,
     RewardWeights,
     Snapshot,
     episode_return,
@@ -370,3 +372,115 @@ def test_hover_reference_matches_the_energy_module():
     # float32 tensor path vs float64 python path -- agreement to fp32 precision.
     direct = total_power_w(torch.tensor(0.0), torch.tensor(0.0), DEFAULT_AIRFRAME).item()
     assert hover_reference_power_w(DEFAULT_AIRFRAME) == pytest.approx(direct, rel=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# The "hold" factor on Phi_observe -- Block G, the observer-tenure deficit
+# --------------------------------------------------------------------------- #
+#
+# Measured: B0 holds the observer role 264.6 steps, every learned policy 27-51,
+# and an 81-run sweep that scaled `d_ref_m` and `potential_scale` moved it by 12.
+# The cause is that EVERY reward term is flat while the swarm is succeeding, so
+# `w_hold` puts a gradient there. It lives in the potential, so PBRS bounds the
+# damage: it cannot move the optimum, only learning speed.
+
+
+def _hold_snap(observer_dist_m: float, clearance_m: float = 1e4, n: int = 5):
+    """A snapshot with one clear sightline held at a chosen range.
+
+    ⚠️ `nearest_dist_m` is held FIXED while `observer_dist_m` varies, so these
+    tests isolate the hold factor from `Phi_approach`. That is also the physical
+    case the term exists for: some drone is parked near the target while the one
+    that can actually SEE it sits further out. Tying the two together (the first
+    version of this helper) makes every assertion below measure `Phi_approach`.
+    """
+    return Snapshot(
+        observed=torch.ones(1, dtype=torch.bool),
+        e2e_capacity_mbps=torch.full((1,), 60.0),
+        nearest_dist_m=torch.full((1,), 40.0),
+        best_clearance_m=torch.full((1,), clearance_m),
+        battery=torch.full((1, n), 0.8),
+        speed_ms=torch.zeros(1, n),
+        accel_ms2=torch.zeros(1, n),
+        observer_dist_m=torch.full((1,), observer_dist_m),
+    )
+
+
+def test_w_hold_zero_is_the_shipped_potential_bitwise():
+    """It ships off, and `test_golden.py` depends on that being exact."""
+    snap = _hold_snap(291.0)
+    shipped = potential(snap, DEFAULT_WEIGHTS)
+    explicit = potential(snap, replace(DEFAULT_WEIGHTS, w_hold=0.0))
+    assert torch.equal(shipped, explicit)
+    assert DEFAULT_WEIGHTS.w_hold == 0.0, "the hold factor must ship disabled"
+
+
+def test_the_flat_regime_is_what_it_fixes():
+    """The defect, asserted directly rather than described in a comment.
+
+    With the shipped potential, a sightline held from 79 m (B0's observer) and
+    one held from 291 m (every learned policy's) are worth EXACTLY the same,
+    because `occlusion` returns 1e4 for "nothing in the way".
+    """
+    near, far = _hold_snap(79.0), _hold_snap(291.0)
+    observe = lambda s: torch.sigmoid(s.best_clearance_m / DEFAULT_WEIGHTS.tau_clearance_m)
+    assert torch.equal(observe(near), observe(far))
+    assert float(observe(near)) == 1.0, "Phi_observe is pinned, not merely close"
+
+    w = replace(DEFAULT_WEIGHTS, w_hold=0.4)
+    assert float(potential(near, w)) > float(potential(far, w)), (
+        "w_hold must separate the two geometries the shipped potential cannot"
+    )
+
+
+def test_hold_is_monotone_in_the_observer_range():
+    w = replace(DEFAULT_WEIGHTS, w_hold=0.4, d_hold_m=400.0)
+    values = [float(potential(_hold_snap(d), w)) for d in (50.0, 150.0, 300.0, 500.0)]
+    assert values == sorted(values, reverse=True), values
+    # Beyond `d_hold_m` the factor is clamped, so there is no gradient to chase
+    # off the end of the map.
+    assert float(potential(_hold_snap(500.0), w)) == float(potential(_hold_snap(900.0), w))
+
+
+def test_hold_does_nothing_when_nobody_sees():
+    """`clear` gates it: a blocked ray must not be rewarded for being close.
+
+    Otherwise the term becomes the "salary" REWARD.md warns about -- paid for
+    proximity rather than for a sightline.
+    """
+    w = replace(DEFAULT_WEIGHTS, w_hold=0.4)
+
+    def spread(clearance_m: float) -> float:
+        near = potential(_hold_snap(50.0, clearance_m=clearance_m), w)
+        far = potential(_hold_snap(390.0, clearance_m=clearance_m), w)
+        return abs(float(near) - float(far))
+
+    # The gate is `sigmoid(clearance / tau_c)`, so it is SOFT, not zero -- at
+    # -60 m it still reads 0.018 and a little range signal leaks through. That is
+    # the intended behaviour (a hard gate would put a discontinuity in Phi); what
+    # must hold is that the leak is negligible against the effect on a real
+    # sightline. Ratio rather than an absolute, so `potential_scale` cannot
+    # silently invalidate the assertion.
+    leak = spread(-60.0) / spread(1e4)
+    assert leak < 0.05, f"a blocked ray carries {leak:.1%} of the clear-ray effect"
+
+
+def test_hold_leaves_the_pbrs_telescoping_intact():
+    """A round trip must cancel exactly -- the property that makes Phi safe."""
+    w = replace(DEFAULT_WEIGHTS, w_hold=0.5)
+    a, b = _hold_snap(300.0), _hold_snap(80.0)
+    gamma = 1.0  # telescoping is exact only at gamma = 1; PBRS's own statement
+    out = shaping(a, b, w, gamma) + shaping(b, a, w, gamma)
+    assert torch.allclose(out, torch.zeros_like(out), atol=1e-6), float(out)
+
+
+def test_hold_never_reaches_the_degenerate_setting():
+    """At `w_hold = 1` a distant-but-clear sightline is worth zero potential.
+
+    That would discourage acquiring at all, so the docstring bounds the sane
+    range at 0.6. This pins the reason rather than the number.
+    """
+    w = replace(DEFAULT_WEIGHTS, w_hold=1.0, d_hold_m=400.0)
+    assert float(potential(_hold_snap(500.0), w)) == float(
+        potential(_hold_snap(500.0, clearance_m=-60.0), w)
+    ), "at w_hold=1 a clear distant ray scores the same as a blocked one"

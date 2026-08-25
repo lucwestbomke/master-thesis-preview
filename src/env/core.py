@@ -809,11 +809,19 @@ class BatchedSwarmEnv:
             reuse_limit=cfg.reuse_limit,
         )
 
+        # The drone holding the best ray, and its range. Two extra kernels, no
+        # host sync -- and it is NOT `dist_hvt.min()`: a drone can be nearest and
+        # blind (wrong side of a building), which is exactly the case
+        # `nearest_dist_m` cannot express. Only `reward.potential` reads it, and
+        # only when `w_hold > 0`.
+        best_clr, observer = clr_hvt.max(dim=-1)
+
         snap = Snapshot(
             observed=sees.any(dim=-1),
             e2e_capacity_mbps=e2e,
             nearest_dist_m=dist_hvt.min(dim=-1).values,
-            best_clearance_m=clr_hvt.max(dim=-1).values,
+            best_clearance_m=best_clr,
+            observer_dist_m=dist_hvt.gather(1, observer.unsqueeze(1)).squeeze(1),
             battery=self.battery,
             speed_ms=self.drone_vel.norm(dim=-1),
             accel_ms2=self.last_accel,

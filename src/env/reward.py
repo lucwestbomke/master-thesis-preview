@@ -87,6 +87,12 @@ class RewardWeights:
     tau_clearance_m: float = 15.0  # ~building height, ~2 steps of travel
     tau_capacity_mbps: float = 6.0  # 40% of threshold; tracks CAPACITY_THRESHOLD_MBPS
     d_ref_m: float = 1500.0  # map scale
+    # The "hold" factor on Phi_observe. `w_hold = 0.0` reproduces the shipped
+    # potential BITWISE, so this ships off. See `potential()` for the argument.
+    # Sane range is [0, 0.6]: at 1.0 a distant-but-clear sightline is worth
+    # nothing, which would discourage acquiring at all.
+    w_hold: float = 0.0
+    d_hold_m: float = 400.0
 
     # --- physical references for normalisation ---
     max_accel_ms2: float = 10.0
@@ -106,6 +112,12 @@ class Snapshot:
     battery: torch.Tensor  # (B, N) in [0, 1]
     speed_ms: torch.Tensor  # (B, N)
     accel_ms2: torch.Tensor  # (B, N)
+    #: (B,) range of the drone that actually HOLDS that ray -- the argmax of
+    #: clearance, not the argmin of distance. A drone 50 m away on the wrong
+    #: side of a building is near but blind, and `nearest_dist_m` cannot tell
+    #: the difference. Only read when `w_hold > 0`; optional so the reward's
+    #: own tests can build a Snapshot without it.
+    observer_dist_m: torch.Tensor | None = None
 
     @property
     def n_agents(self) -> int:
@@ -135,6 +147,45 @@ def potential(snap: Snapshot, w: RewardWeights) -> torch.Tensor:
     # 20 m away across the street sees nothing while one 300 m down it sees
     # fine -- clearance captures that where distance cannot.
     observe = torch.sigmoid(snap.best_clearance_m / w.tau_clearance_m)
+
+    # ⚠️ The reason this factor exists, and it is not "more pull toward the
+    # target" -- that hypothesis was tested and died.
+    #
+    # `occlusion` returns 1e4 for "nothing in the way", so `best_clearance_m` is
+    # 1e4 the moment ANY ray is clear and the sigmoid above reads exactly 1.0.
+    # Meanwhile `mission` is 1.0, `idle` is 0.0, and `Phi_link` is 0.999 because
+    # a formed chain carries ~4x the 15 Mbps bar. **While the swarm is
+    # succeeding, every term in the reward is flat**, so nothing distinguishes an
+    # action that will hold the sightline from one that will drift out of it. The
+    # policy only hears about the drift ~30 steps later, through a GAE window
+    # whose effective horizon at lambda = 0.95 is ~20 steps.
+    #
+    # That is a ZERO gradient, not a weak one, which is why scaling the existing
+    # terms could not fix it: the 81-run sweep moved `d_ref_m` 1500 -> 400
+    # (3.8x the closing gradient) and `potential_scale` 10 -> 30, and both were
+    # nulls. You cannot fix a zero by multiplying it.
+    #
+    # `hold` grades the sightline by the range of the drone holding it. At a
+    # 40-80 m ceiling that is a cheap monotone stand-in for elevation angle:
+    # B0 parks its observer at 79 m (~37 deg, a short near-vertical ray that
+    # survives the HVT moving down a street) where the learned policies loiter at
+    # 291 m (~12 deg, a long canyon ray one building corner kills).
+    #
+    # It is a TEAM quantity -- one observer, the best one -- so once somebody is
+    # parked the pull stops for everyone else, exactly as `d_min` and
+    # `clearance_best` already do. Per-drone would cluster the swarm on the HVT
+    # and leave nobody relaying.
+    #
+    # ✅ It lives in the potential, so PBRS proves it cannot move the optimum
+    # (Ng, Harada & Russell 1999). The worst it can do is slow learning down.
+    if w.w_hold > 0.0:
+        if snap.observer_dist_m is None:
+            raise ValueError(
+                "w_hold > 0 needs Snapshot.observer_dist_m; the env supplies it, "
+                "a hand-built Snapshot must too"
+            )
+        hold = 1.0 - (snap.observer_dist_m / w.d_hold_m).clamp(0.0, 1.0)
+        observe = observe * (1.0 - w.w_hold + w.w_hold * hold)
 
     # Gradient below threshold, where the binary link indicator has none.
     link = torch.sigmoid((snap.e2e_capacity_mbps - CAPACITY_THRESHOLD_MBPS) / w.tau_capacity_mbps)

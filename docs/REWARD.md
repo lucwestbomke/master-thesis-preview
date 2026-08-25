@@ -39,9 +39,20 @@ Two rules:
 1. **`Φ = 0` at genuine terminal states** (battery death), or `γ^T Φ(s_T)`
    survives the telescoping and reintroduces a policy-dependent bias. Truncation
    at 600 steps is fine provided the value is bootstrapped there.
-2. **The scale of `Φ` is free.** Because it cannot move the optimum, it is the
-   one quantity in the reward tunable purely for learning speed with zero
-   methodological consequence. Every other weight changes the objective.
+2. **Everything *inside* `Φ` is free.** The proof holds for **any** `Φ`, so
+   nothing within it can move the optimum: `k`, `d_ref_m`, `τ_c`, `τ_l`,
+   `w_hold`, `d_hold_m`, **and the component weights `w_a` / `w_o` / `w_l`**,
+   which this file calls "suggested" below and which nobody has moved.
+
+   > ⚠️ This point used to read "the scale of `Φ` is free… it is *the one
+   > quantity*… every other weight changes the objective", which was taken to
+   > lock `w_a` / `w_o` / `w_l`. It does not — they sit inside the potential and
+   > are as free as `k`. Corrected 2026-08-25.
+
+   ⛔ The **objective** weights are the constrained ones — `mission`, `idle`,
+   `energy`, `battery_variance`, `effort` define what is optimal, and of those
+   only `λ` (`battery_variance`) is sweepable. The rest are pinned by the
+   behavioural orderings in this file.
 
 ## The potential
 ```
@@ -52,6 +63,7 @@ Two rules:
 | `Φ_approach` | `1 − min(d_min, D_ref)/D_ref`, `d_min` = nearest drone→HVT, `D_ref` ≈ map diagonal | coarse; non-zero anywhere on the map so the agent is never blind |
 | `Φ_observe` | `sigmoid(clearance_best / τ_c)`, `τ_c ≈ 15 m` | fine; rewards correct *geometry*, not mere proximity |
 | `Φ_link` | `sigmoid((C_e2e − 15.0) / τ_l)`, `τ_l = 6 Mbps` | gradient below threshold, where the binary indicator has none |
+| `Φ_observe`'s **hold factor** | `× (1 − w_h + w_h·(1 − min(r_obs, d_hold)/d_hold))`, `w_h = 0` **off by default** | ⚠️ puts a gradient in the regime where every term is flat — see below |
 
 Each lands in `[0,1]`. Suggested `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
 the link, which is the hardest and last-learned stage.
@@ -59,6 +71,48 @@ the link, which is the hardest and last-learned stage.
 **The handover is the design.** Far out only `Φ_approach` moves; once a drone is
 close it saturates and `Φ_observe` takes over; once observing, only `Φ_link`
 still improves. Three mission stages, each with a live gradient, no dead zones.
+
+### ⚠️ Why `Φ_observe` needs a hold factor — the flat-success problem
+
+Added 2026-08-25, **off by default** (`w_hold = 0` reproduces the shipped
+potential bitwise). Look at every reward term while the swarm is *succeeding*:
+
+| term | value when a drone is observing over a live chain |
+|---|---|
+| `w_mission · capable` | 1.0 — flat |
+| `w_idle · ¬observed` | 0 — flat |
+| `Φ_observe = sigmoid(clearance/15)` | `occlusion` returns **1e4** for a clear ray → `sigmoid(667)` = **1.0**, flat |
+| `Φ_link = sigmoid((C−15)/6)` | a formed chain carries ~60 Mbps → **0.999**, flat |
+
+**Everything is flat.** Nothing distinguishes an action that will hold the
+sightline from one that will drift out of it, and the policy only hears about the
+drift ~30 steps later through a GAE window whose effective horizon at λ = 0.95 is
+~20 steps. 📏 That is the measured deficit: B0 holds the observer role 264.6
+steps, every learned policy 27–51.
+
+📏 **It is a zero gradient, not a weak one**, which is why scaling could not fix
+it. The 81-run sweep moved `d_ref_m` 1500 → 400 (3.8× the closing gradient) and
+`potential_scale` 10 → 30. Both were nulls. You cannot fix a zero by multiplying
+it — an earlier reading of this deficit as "the pull toward closing is too weak"
+is therefore **wrong**, and the sweep is what refuted it.
+
+`hold` grades the sightline by the range of the drone *holding* it — the argmax
+of clearance, **not** `nearest_dist_m`, because a drone can be nearest and blind
+on the wrong side of a building. At a 40–80 m ceiling range is a cheap monotone
+stand-in for elevation angle: B0 parks its observer at 79 m (≈37°, a short
+near-vertical ray that survives the HVT moving down a street) where learned
+policies loiter at 291 m (≈12°, a long canyon ray one corner kills).
+
+Measured effect on `Φ` of closing 291 m → 79 m with the ray clear:
+**0.000 shipped**, 0.74 at `w_hold = 0.4`, 1.11 at `w_hold = 0.6`.
+
+🔧 Sane range is `w_hold ∈ [0, 0.6]`: at 1.0 a distant-but-clear sightline is
+worth zero potential, which would discourage acquiring at all. Team quantity, so
+once someone is parked the pull stops for everyone — no clustering.
+
+⛔ **Do not do this in `r` instead.** A "consecutive observed steps" bonus encodes
+the hypothesis into the objective and then lets us discover it, and it is
+non-Markovian. Inside `Φ` the PBRS proof bounds the damage to learning speed.
 
 Three traps this avoids:
 - **Distance to the HVT is the wrong measure.** The observation envelope is a

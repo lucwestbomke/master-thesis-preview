@@ -731,13 +731,24 @@ Ordered by what blocks the thesis, not by build order.
   F4 on hop count, `chain_occluded` or p5 capacity? One pilot per rung, and it
   de-risks RQ1's *attribution*, which is the primary research question. Cheap
   enough that there is no reason to defer it to April 2027.
-* **`Φ_observe` saturates, and nothing has been done about it.** G6 measured that
-  `occlusion` returns `1e4` for "nothing in the way", so `clearance_best` is
-  `1e4` whenever *any* drone holds a clear ray and `Φ_observe` pins at 1.0. It
-  rewards **having** a sightline and says nothing about having a **better** one —
-  which is exactly the "hold station" gradient the tenure deficit is missing. It
-  lives inside `Φ`, so PBRS makes it optimum-preserving and it is on the
-  permitted list. The cheapest untried lever aimed at the actual deficit.
+* **`Φ_observe`'s hold factor — built 2026-08-25, `w_hold = 0`, unmeasured.**
+  The flat-success problem is written up in [`REWARD.md`](REWARD.md): while the
+  swarm is succeeding *every* reward term is flat, so nothing distinguishes
+  holding a sightline from drifting out of it. 📏 The sweep already refuted the
+  earlier reading ("the pull to close is too weak") — `d_ref 400` and
+  `potential_scale 30` were both nulls, because a zero gradient cannot be fixed
+  by multiplying it. `--w-hold 0.4 --d-hold 400` is the arm to run; shipped `Φ`
+  is the control. Closing 291 m → 79 m is worth **0.000** shipped and **0.74** at
+  `w_hold = 0.4`.
+* 🔧 **`Φ`'s component weights `w_a` / `w_o` / `w_l` have never been moved.**
+  `REWARD.md` used to read as though they were locked; they are inside `Φ` and
+  as free as `k` (corrected 2026-08-25). Given the deficit is observation
+  persistence, `w_observe` against `w_link` is an obvious untried lever.
+* **`Φ_link` has the same disease and is untouched.** A formed chain carries
+  ~60 Mbps against a 15 Mbps bar, so `sigmoid((C−15)/6)` reads 0.999 whenever a
+  chain exists — while 📏 `chain_occluded` runs 33–41 %. The analogous fix grades
+  it by chain clearance. Left alone deliberately so the first experiment has one
+  variable.
 * **The cadence grid confounds two axes.** `deep` changes `num_envs` (1024 →
   4096) *and* `rollouts` (32 → 64) together, and `wide` shows `num_envs` alone is
   harmful. The isolating cell — `1024 × 64 × 8 mini-batches`, same 40,960
