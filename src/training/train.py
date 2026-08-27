@@ -567,13 +567,16 @@ def _open_log(cfg: TrainConfig, out: Path, env, agent):
         handle.flush()
         if wb is not None:
             wb.log(row, step=int(row["timestep"]))
+        # `nan` when no episode ENDED in this window -- at num_envs = 4096 one
+        # interval is 20 env-steps against a 600-step episode, so most rows have
+        # no boundary at all and a printed "0.0" reads as "the return was zero".
+        ret = row["episode_return"]
+        ret_s = "     nan" if math.isnan(ret) else f"{ret:8.1f}"
         print(
             f"  it {row['timestep']:>6}  steps {row['env_steps']:>10,}  "
             f"capable {row['mission_capable'] * 100:5.1f} %  "
             f"observed {row['observed'] * 100:5.1f} %  "
-            f"ret/ep {row['episode_return']:>8}  "
-            if row["episode_return"] != row["episode_return"]  # NaN: nothing finished
-            else f"ret/ep {row['episode_return']:8.1f}  {row['env_steps_per_s']:,.0f} steps/s"
+            f"ret/ep {ret_s}  {row['env_steps_per_s']:,.0f} steps/s"
         )
 
     return log
