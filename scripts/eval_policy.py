@@ -58,6 +58,12 @@ _AS_PERCENT = frozenset(
         "observed_last_third",
         "capable_share_high",
         "capable_share_low",
+        # ⚠️ Reads BACKWARDS from the obvious intuition, and that is the point. The
+        # rotary-wing power curve is U-shaped: cruising at 13.3 m/s costs 0.638 of
+        # hover. So a drone that wanders burns LESS battery than one holding station,
+        # and `battery_end` HIGHER than B0's is evidence the swarm is cruising to
+        # stay cheap rather than holding a useful position.
+        "battery_end",
     }
 )
 
@@ -93,6 +99,12 @@ REPORT = (
     "off_axis_m",
     "capable_share_high",
     "capable_share_low",
+    # ⚠️ Reads BACKWARDS from the obvious intuition, and that is the point. The
+    # rotary-wing power curve is U-shaped: cruising at 13.3 m/s costs 0.638 of
+    # hover. So a drone that wanders burns LESS battery than one holding station,
+    # and `battery_end` HIGHER than B0's is evidence the swarm is cruising to
+    # stay cheap rather than holding a useful position.
+    "battery_end",
 )
 
 

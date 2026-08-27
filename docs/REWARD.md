@@ -72,6 +72,44 @@ the link, which is the hardest and last-learned stage.
 close it saturates and `Φ_observe` takes over; once observing, only `Φ_link`
 still improves. Three mission stages, each with a live gradient, no dead zones.
 
+### ☠️ The objective pays drones to keep moving, and it outweighs `Φ` by 100×
+
+📏 Measured 2026-08-26. The rotary-wing power curve is U-shaped — `energy.py`
+exists because the original spec had it backwards — and normalised to hover:
+
+| speed | 0 | 5 | 10 | **13.3** | 15 | 20 | 25 m/s |
+|---|---|---|---|---|---|---|---|
+| `P / P_hover` | 1.000 | 0.855 | 0.671 | **0.638** | 0.646 | 0.758 | 1.004 |
+
+So at `w_energy = 0.15`, **cruising at 13.3 m/s instead of holding station pays
+`+0.0544` per step** — `+32.6` over a 600-step episode, or **33 steps of
+`mission_capable`**.
+
+⚠️ **Against the entire reachable `Φ` swing of 0.32, that is 102×.** Per step it
+is worse still: closing 8 m (one step of travel) moves `Φ` by ~**0.013**, while
+cruising rather than holding pays **0.054**. **The energy term is four times
+stronger than the shaping and points the other way.**
+
+**This is not a bug and the objective is not misspecified.** The power curve is
+physically right, `w_energy` is pinned by the behavioural orderings below, and B0
+pays the cost and still earns 244.1 episode return against a learned policy's
+90.5 — the reward ranks the target behaviour 2.7× higher. What is wrong is the
+**gradient balance**: a drone weighing "hold this position" against "keep
+cruising" sees a certain −0.054/step now, against a future mission gain that `Φ`
+signals at 0.013/step.
+
+📏 It also explains the measured behaviour that four interventions could not
+move. Idle drones cruise rather than hold, so `off_axis_m` is **252 m** against
+B0's **105 m**; the observer stands at **184 m** rather than closing to B0's
+**89 m**, because holding station over a moving target is the expensive option.
+And every `Φ`-side intervention tried so far — `w_hold`, `w_relay`, `d_ref 400`,
+`potential_scale 30` — is worth ≲1 against an opposing force of ~30.
+
+⛔ **Do not "fix" this by cutting `w_energy`.** It is an objective weight, pinned
+by ordering, and lowering it changes what is optimal. The lever is `Φ`, which is
+free — and the number this section exists to supply is **the scale `Φ` has to
+reach: a per-step gradient competitive with 0.054, not a total swing of 0.32.**
+
 ### ⚠️ Why `Φ_observe` needs a hold factor — the flat-success problem
 
 Added 2026-08-25, **off by default** (`w_hold = 0` reproduces the shipped
