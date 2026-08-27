@@ -63,14 +63,158 @@ Two rules:
 | `Φ_approach` | `1 − min(d_min, D_ref)/D_ref`, `d_min` = nearest drone→HVT, `D_ref` ≈ map diagonal | coarse; non-zero anywhere on the map so the agent is never blind |
 | `Φ_observe` | `sigmoid(clearance_best / τ_c)`, `τ_c ≈ 15 m` | fine; rewards correct *geometry*, not mere proximity |
 | `Φ_link` | `sigmoid((C_e2e − 15.0) / τ_l)`, `τ_l = 6 Mbps` | gradient below threshold, where the binary indicator has none |
-| `Φ_observe`'s **hold factor** | `× (1 − w_h + w_h·(1 − min(r_obs, d_hold)/d_hold))`, `w_h = 0` **off by default** | ⚠️ puts a gradient in the regime where every term is flat — see below |
+| `Φ_observe`'s **hold factor** | `× (1 − w_h + w_h·(1 − min(r_obs, d_hold)/d_hold))`, `w_h = 0` **off by default** | ⚠️ puts a gradient in the regime where every term is flat — see below. 📏 **A null at 5 seeds**; superseded by `Φ_standoff` |
+| **`Φ_standoff`** | `observed · sigmoid((d* − r_obs)/τ_r)`, `d* = 127 m`, `τ_r = 40 m`, `w_s = 0` **off by default** | the closing decision, graded *at the threshold* — see **Φ v2** |
+| **`Φ_cover`** | `½·[mean_m(1 − Π_i(1 − f_im)) + mean_i(max_m f_im)]`, `f = 1/(1+(d/120 m)²)`, `w_v = 0` **off by default** | the only component that is not blind to four drones out of five — see **Φ v2** |
 
-Each lands in `[0,1]`. Suggested `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
-the link, which is the hardest and last-learned stage.
+Each lands in `[0,1]`. Shipped `w_a=0.25, w_o=0.35, w_l=0.40` — tilted toward
+the link, which was assumed to be the hardest and last-learned stage. ⚠️ The
+`Φ v2` preset re-allocates them; see below.
 
 **The handover is the design.** Far out only `Φ_approach` moves; once a drone is
 close it saturates and `Φ_observe` takes over; once observing, only `Φ_link`
 still improves. Three mission stages, each with a live gradient, no dead zones.
+
+> ☠️ **That last paragraph is the design intent and it is not what the shipped
+> potential does.** Measured, not argued — see the next two sections.
+
+### ☠️ `Φ` was audited on 2026-08-27 and it is switched off where it matters
+
+📏 `scripts/measure_potential.py`, eval split, stage 4, F4, MPS. It banks the
+states a policy actually visits and scores any `RewardWeights` over them, so a
+candidate potential can be judged **before** a training run. Two defects, and
+they are different in kind:
+
+**1. There is no gradient along the axis the whole diagnosis turns on.** Sweep
+the observer 250 m → 60 m with the ray clear and a chain carrying 25 Mbps —
+exactly the decision "close to B0's 89 m or stand off at 184 m", with everything
+else held where the policy already has it:
+
+| | swing over the band | per 8 m step | vs the energy term's 0.0544 |
+|---|---|---|---|
+| shipped `Φ` | **+0.320** | 0.0133 | **0.25×** |
+| `Φ v2` | +1.717 | 0.0774 | **1.42×** |
+
+**2. `Φ` is exactly constant in four drones out of five.** Every shipped
+component reduces the swarm with a hard `min` (`nearest_dist_m`), a hard `max`
+(`best_clearance_m`) or the router's chosen path (`e2e_capacity_mbps`). So a
+drone that is not currently the nearest, the clearest or on the chain can fly
+**anywhere at all** without moving `Φ` by one bit — and those are precisely the
+drones that have to pre-position for the relay and the handoff. Measured with
+four drones working the axis and the fifth stranded to one side:
+
+| stranded drone, one 8 m step home | shipped | `Φ v2` | whole trip home, shipped → v2 |
+|---|---|---|---|
+| 200 m off-axis | **0.0000** | 0.0078 | 0.000 → **+0.339** |
+| 500 m off-axis | **0.0000** | 0.0010 | 0.000 → **+0.446** |
+| 800 m off-axis | **0.0000** | 0.0003 | 0.000 → **+0.465** |
+
+📏 And the behaviour that goes with it: learned policies sit pressed against the
+map boundary on **15–23 %** of steps where B0 sits there **0.9 %**, and
+`off_axis_m` is **252 m** against B0's **105 m**. Out there the shipped
+potential is not weak, it is **absent**.
+
+⚠️ **This retro-explains the shape of every null in Block G.** `w_hold`,
+`w_relay`, `d_ref 400` and `potential_scale 30` all moved a potential whose
+gradient in the operating regime was between 0.013 and 0.03 per step. None of
+them could have worked, and the reason is arithmetic rather than mechanism.
+
+### `Φ` v2 — the rebuild, `reward.PHI_V2`, off by default
+
+Ships as one preset behind `--phi v2`; `w_standoff = w_cover = 0.0` reproduces
+the shipped potential **bitwise**, so `test_golden.py` is untouched.
+
+```
+Φ = k · [ 0.05·Φ_approach + 0.20·Φ_observe + 0.20·Φ_standoff
+                          + 0.15·Φ_link    + 0.40·Φ_cover ]        k = 10
+```
+
+🔒 **The weights sum to 1.0 and `k` stays 10: `Φ` is redistributed, never
+inflated.** 📏 The reason is measured. PBRS pays `γ·Φ(s′) − Φ(s)`, so a policy
+that *holds* a state pays `(γ−1)·Φ` every step — at `γ = 0.997` and `Φ ≈ 9` that
+is **−0.027/step**, and the instrument measures B0's mean shaping at
+**−0.018/step** against the learned policy's −0.016. **The drag is proportional
+to `Φ`, and therefore largest for the best policy.** Tripling `k` triples it,
+which is the most likely reason `potential_scale = 30` measured as a *null*
+rather than as an improvement in the 81-run sweep.
+
+**`Φ_standoff` — the closing decision, and it is not `w_hold` again.** The
+variable is the same and both the construction and the scale are different:
+
+| | `w_hold` (null at 5 seeds) | `Φ_standoff` |
+|---|---|---|
+| enters `Φ` as | a **factor on** `Φ_observe` | an **additive component** |
+| budget | `w_observe · w_hold` ≤ 0.21 | `w_standoff` = 0.20, set directly |
+| shape | linear ramp to `d_hold` = 400 m | logistic centred on **127 m** |
+| over 291 → 79 m | +0.74 total, 0.03/step | +1.72 total, **0.077/step** |
+| at its maximum setting | a distant sightline is worth **zero**, discouraging acquisition | `Φ_observe` still pays in full; standoff only ever **adds** |
+
+📏 The centre is Block B's measured along-street sightline median, **127 m**: B0's
+observer stands at 88.8 m *inside* it and the learned observer at 184 m *outside*
+it. The deficit is a **threshold**, so the budget is spent at the threshold
+rather than smeared over 400 m of ramp.
+
+⚠️ Gated on `observed`, the boolean — **not** on `sigmoid(clearance/τ_c)`. A test
+forced the distinction: a ray blocked by 20 m of building still reads
+`sigmoid(−20/15) = 0.21`, so grading the gate would leak a fifth of the closing
+pull to a blind drone, which is this file's own first trap.
+
+**`Φ_cover` — the term-blindness fix.** Sample 16 points along the MCV→HVT axis;
+`f_im = 1/(1 + (d_im/120 m)²)` is drone `i`'s cover of sample `m`. Two halves,
+and each is the other's degenerate case:
+
+* `covered = mean_m [1 − Π_i(1 − f_im)]` — a soft OR. Rewards **spreading**, and
+  cannot be satisfied by huddling at either end of the axis. ⚠️ On its own it
+  gives a *redundant* drone no gradient, and that is correct arithmetic rather
+  than a bug: `∂covered/∂f_j = Π_{i≠j}(1 − f_i)` is ~0 once the axis is held.
+  Measured at **+0.0003/step** for a fifth drone 200 m off-axis — still nothing.
+* `mustered = mean_i [max_m f_im]` — each drone's own proximity to the axis.
+  Non-vanishing everywhere. ⚠️ On its own it is maximised by every drone sitting
+  **on the MCV**, which is distance zero from the segment and covers none of it.
+
+Fixed 50/50, not a knob: they are two halves of one statement — *be on the axis,
+and be spread along it*.
+
+🔍 **`∂covered/∂f_j = Π_{i≠j}(1 − f_i)` is the interesting part.** A drone's
+marginal value at a point is exactly *how uncovered that point is by everybody
+else* — a differentiated role pressure out of a **team** quantity with no agent
+index in it, which is what this file's homogeneity rule requires and what Block
+G's per-drone `w_relay` could not produce.
+
+⚠️ **The kernel is Cauchy, not Gaussian, deliberately.** At 800 m and
+`r_cover = 120 m` it still reads 0.022 and still has slope. An exponential tail —
+or the hard `min` every shipped component uses — is numerically zero out there,
+and a drone at the map edge is exactly the one that has to be told to come back.
+
+📏 `r_cover_m = 120` was **chosen by sweep and the obvious derivation was the one
+the sweep rejected.** `R`/2 = 262 m ("two drones whose discs touch are one hop
+apart") saturates the term at the behaviour it is meant to reward:
+
+| `r_cover` | 120 | 180 | 262 | 400 m |
+|---|---|---|---|---|
+| B0 − learned separation | **1.247** | 1.114 | 0.872 | 0.575 |
+| B0's p1 (of a 3.0 maximum) | **1.428** | 2.000 | 2.446 | 2.750 |
+| whole trip home from 500 m | **0.335** | 0.286 | 0.242 | 0.184 |
+
+120 m wins on all three, and is *corroborated* — not derived — by Block B's 127 m
+sightline median.
+
+### How to judge a candidate `Φ` without training anything
+
+⚠️ **The ideal `Φ` is `V*`.** Ng, Harada & Russell show the shaped problem's value
+function is `V − Φ`, so `Φ = V*` makes every advantage immediate. That gives an
+offline test with no training run in it: correlate `Φ` against the **discounted
+future `mission_capable` return** of banked states, and check it ranks B0's
+states above a learned policy's.
+
+| pooled over both banks | shipped | `Φ v2` |
+|---|---|---|
+| corr(`Φ`, discounted future capable) | +0.270 | **+0.301** |
+| mean `Φ`(B0) − mean `Φ`(learned) | +2.101 | **+3.584** |
+
+The correlation gain is modest and is reported as such; the **separation** is the
+number that moved, by 71 %. This is the check that could have told the block's
+four failed interventions from a good one, and it costs a minute.
 
 ### ☠️ The objective pays drones to keep moving, and it outweighs `Φ` by 100×
 

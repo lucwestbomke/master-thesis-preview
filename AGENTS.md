@@ -55,7 +55,7 @@ line of sight, so the relay chain is geometrically necessary.
 | **D** | Batched env core + PettingZoo adapter + skrl wrapper | ✅ **built**, 46 tests; gate met with ~3170× margin. Awaiting the CUDA re-run of the *full env* (D3) — [`docs/BLOCK_D.md`](docs/BLOCK_D.md) |
 | **E** | Presentation renderer + B0 scripted baseline | ✅ **done**, 27 tests; B0 = **57.2 %** mission-capable, and the rate requirement moved 5 → **15 Mbps** — [`docs/BLOCK_E.md`](docs/BLOCK_E.md) |
 | **F** | Fidelity levels F0–F4 as config flags — RQ1's independent variable | ✅ **done**, 38 + 9 tests; `R` = **524 m** measured; F4 == the pre-Block-F env — [`docs/BLOCK_F.md`](docs/BLOCK_F.md) |
-| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 339 tests. Equal-budget sweep + stage B done. **Gate not met**: GNN **41.2 % [3.8]** against B0's **57.3 %**, eval split, CUDA, 5 seeds — [`docs/BLOCK_G.md`](docs/BLOCK_G.md), plan in [`docs/BLOCK_G_PLAN.md`](docs/BLOCK_G_PLAN.md) |
+| **G** | MAPPO integration + curriculum | 🔨 **in progress**, 370 tests. Equal-budget sweep + stage B done. **Gate not met**: GNN **41.2 % [3.8]** against B0's **57.3 %**, eval split, CUDA, 5 seeds. `Φ` rebuilt 2026-08-27, untrained — [`docs/BLOCK_G.md`](docs/BLOCK_G.md), plan in [`docs/BLOCK_G_PLAN.md`](docs/BLOCK_G_PLAN.md) |
 | H | Sionna offline validation of the closed-form channel | not started |
 
 Phase 0 (prep) runs to Feb 2027; the thesis window is Mar–Aug 2027. **Freeze the
@@ -93,6 +93,47 @@ coordination trap: the deficit is **role emergence**, and observer tenure
 nulls** — recurrence (−1.05 pp), `w_hold`, the per-drone `w_relay` potential, and
 Yu et al.'s agent-specific critic (which actively hurt). Each was pre-declared and
 run at 5 seeds; all are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+☠️ **`Φ` was audited on 2026-08-27 and it is switched off where it matters**, which
+retro-explains the *shape* of all four. Measured by
+[`scripts/measure_potential.py`](scripts/measure_potential.py) on states a real
+policy visits — two defects, different in kind:
+
+1. **No gradient along the closing axis.** Observer 250 → 60 m with the ray clear
+   and a chain at 25 Mbps, the exact decision the diagnosis turns on: the shipped
+   `Φ` moves **0.320 in total**, **0.0133 per 8 m step**, against the **0.0544**
+   per step the energy term can pay. **0.25×.**
+2. **`Φ` is exactly constant in four drones out of five.** Every component is a
+   hard `min`, a hard `max` or the router's chosen path, so a drone that is not
+   the nearest, the clearest or on the chain can fly anywhere without moving `Φ`
+   by one bit. Moving a stranded drone 8 m home is worth **0.0000**, at any
+   distance. 📏 Learned policies sit against the map boundary on **15–23 %** of
+   steps; B0 on **0.9 %**.
+
+⚙️ **The rebuilt potential ships as `--phi v2`, off by default and bitwise
+identical to the shipped `Φ` when off.** Two new components — `Φ_standoff` (the
+closing decision, a logistic on Block B's measured 127 m sightline threshold,
+**0.0774/step = 1.42× the bar**) and `Φ_cover` (axis coverage, the only component
+that is not blind to four drones out of five). 🔒 The five component weights sum
+to 1.0 and `k` stays 10: **`Φ` is redistributed, never inflated**, because PBRS
+charges `(γ−1)·Φ` per step for *holding* a state and that drag is largest for the
+best policy. [`docs/REWARD.md`](docs/REWARD.md); the gate is
+[`docs/BLOCK_G_PLAN.md`](docs/BLOCK_G_PLAN.md) § Gate 3 and **no `Φ v2` policy has
+been trained yet**.
+
+⚠️ **Two claims this project was reasoning from are measured wrong** — both in
+[`docs/DECISIONS.md`](docs/DECISIONS.md):
+
+* **The learned policy is not collecting the energy bonus.** It flies at the
+  **25 m/s dash cap on 57 % of steps** (`P/P_hover ≈ 0.99`) and pays **−0.1333**
+  per step against B0's **−0.1250** — *more*, not less. 0.0544/step stays the
+  right **bar to size `Φ` against**, but it is not the mechanism behind the 184 m
+  stand-off, and over an episode it is ~2 % of that policy's return.
+* **`Φ` is loud, not quiet.** `|ΔΦ|` p90 is **0.365** for the GNN against B0's
+  0.052 — the learned policy receives 7× more shaping while doing worse. The
+  amplitude is the two binary terms flickering; only the *direction* is missing.
+  Scaling `k` amplifies the flicker, which is the likeliest reason
+  `potential_scale = 30` was a null.
 
 📏 **The failure, measured.** The learned observer stands at **184 m**; B0 stands
 at **88.8 m [1.2]**. Block B measured the along-street sightline median at
@@ -320,7 +361,7 @@ and do not write a `DECISIONS.md` entry unless the answer is interesting.
 | `min_log_std`, `entropy_loss_scale` | 0.2, 0.0 | the floor was inert at stage 1 — σ never reached it |
 | `num_envs` / `rollouts` / `mini_batches` | the sweep's `deep` | 📏 `deep` won, but the grid confounds two axes |
 | curriculum boundaries and mix | (0.15, 0.35, 0.60), 20 % | explicitly provisional; find it, freeze it, then it becomes 🔒 |
-| **everything inside `Φ`** | see below | PBRS proves none of it can move the optimum |
+| **everything inside `Φ`** | see below | PBRS proves none of it can move the optimum. 📏 Now **measured** rather than guessed — `scripts/measure_potential.py` scores a candidate before a training run |
 
 ### ⚠️ `Φ`'s internal weights are free, and nobody has touched them
 
@@ -341,9 +382,19 @@ sweepable.
 
 So the free reward surface is larger than the docs imply: `k`, `d_ref_m`,
 `tau_clearance_m`, `tau_capacity_mbps`, `w_approach`, `w_observe`, `w_link`,
-`w_hold`, `d_hold_m` — nine knobs, none of which can change what "success"
-means. Given the measured deficit is observation persistence, `w_observe`
-against `w_link` is an obvious untried lever.
+`w_hold`, `d_hold_m`, `w_relay`, and (since 2026-08-27) `w_standoff`,
+`d_standoff_m`, `tau_standoff_m`, `w_cover`, `r_cover_m`, `n_cover_samples` —
+none of which can change what "success" means. Every one has a `--flag`, and
+`test_train.py` derives that requirement from `RewardWeights` rather than
+hand-listing it, because a knob nothing can set is dead code and this repo has
+shipped that twice.
+
+⛔ **Do not tune any of them by argument.** `scripts/measure_potential.py` banks
+the states a policy actually visits and scores a candidate `Φ` over them — swing,
+per-step gradient against the 0.0544 bar, recall for a drone holding no role, and
+correlation against the discounted future `mission_capable` return, which is the
+quantity the ideal `Φ` (`= V*`) would equal exactly. It costs a minute and it
+would have separated all four of this block's nulls from a real candidate.
 
 ---
 
@@ -510,7 +561,7 @@ documents how it was made.
 uv sync --extra dev                              # `dev` is an EXTRA -- plain
                                                  # `uv sync` gives you neither
                                                  # pytest nor ruff
-uv run pytest                                    # 333 tests (+7 CUDA-only skips)
+uv run pytest                                    # 370 tests (+7 CUDA-only skips)
 uv run ruff check . && uv run ruff format .
 ```
 Offline data prep (needs network; the artefact is committed, so this is only for
@@ -549,15 +600,23 @@ uv run python scripts/calibrate_r.py    --seeds 8 --num-envs 64 --device mps
 uv run python scripts/eval_fidelity.py  --seeds 5 --num-envs 64 --device mps
 uv run python scripts/render_episode.py --policy b0 --route 12 --compare-fidelity
 ```
-Block G. `train.py` is one `(fidelity, architecture, seed)` cell; `eval_policy.py`
-scores a checkpoint through the *same* `evaluate.py` B0 was scored with, so the
-numbers are comparable:
+Block G. `measure_potential.py` scores a candidate `Φ` against the states a real
+policy visits — run it **before** proposing a reward change, not after the run
+comes back a null. `train.py` is one `(fidelity, architecture, seed)` cell;
+`eval_policy.py` scores a checkpoint through the *same* `evaluate.py` B0 was
+scored with, so the numbers are comparable:
+```bash
+uv run python scripts/measure_potential.py --policy b0 runs/<name>/checkpoint.pt \
+    --device mps --bank-dir .banks     # banks are cached; every candidate reuses them
+```
 ```bash
 uv run python -m src.training.train --fidelity F4 --arch mlp --seed 0 \
     --env-steps 10000000 --num-envs 1024 --device cuda
 uv run python -m src.training.train --stage 1 --env-steps 4000000 --device mps  # the toy gate
 uv run python scripts/eval_policy.py runs/F4-mlp-s0/checkpoint.pt \
     --policy random b0 --n 3 5 8 --seeds 5 --device cuda
+uv run python -m src.training.train --phi v2 --fidelity F4 --arch gnn --seed 0 \
+    --env-steps 12000000 --num-envs 4096 --device cuda   # the rebuilt potential
 ```
 **`--device mps` is ~17× on Apple silicon** (5 min against ~1.5 h) and the
 physics is identical — but it draws *different episodes* for the same seed, so

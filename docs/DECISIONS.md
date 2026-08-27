@@ -31,6 +31,78 @@ in the git log; commit messages are long on purpose.
 
 ## Design directions abandoned
 
+### ☠️ "The energy term pays drones to keep moving" — the arithmetic is right, the diagnosis is not
+
+**Proposed** on 2026-08-26 and written into `REWARD.md` and `AGENTS.md`: the
+rotary-wing power curve is U-shaped, so at `w_energy = 0.15` cruising at 13.3 m/s
+pays **+0.0544/step** over holding station — 102× the shipped potential's whole
+reachable swing — and *that* is why the observer stands at 184 m rather than
+closing to 89 m.
+
+📏 **Measured 2026-08-27, and the learned policy is not taking the money.**
+`scripts/measure_potential.py`, eval split, stage 4, F4, MPS, per drone per step:
+
+| | speed p50 | steps > 24 m/s | energy term | steps at the map wall | mean \|a_z\| |
+|---|---|---|---|---|---|
+| B0 | **5.81 m/s** | 3.1 % | **−0.1250** | **0.9 %** | 0.005 |
+| GNN | **24.71 m/s** | **56.7 %** | **−0.1333** | **23.1 %** | **0.821** |
+| MLP | — | — | — | 15.6 % | 0.626 |
+| random | 17.13 m/s | 13.9 % | −0.1158 | — | — |
+
+The learned policy flies at the **25 m/s dash cap** on more than half of all
+steps, where `P/P_hover ≈ 0.99`. It pays **0.0083/step more** than B0, not less.
+The minimum-power airspeed is 13.3 m/s and it is nowhere near it.
+
+**What survives.** 0.0544/step is the largest per-step force the objective can
+exert on the motion decision, so it remains the right **bar to size `Φ` against**
+— and `REWARD.md`'s conclusion ("the lever is `Φ`; do not cut `w_energy`") is
+unchanged.
+
+**What does not.** Energy is **not the mechanism** behind the 184 m stand-off.
+Over the episode the energy term is worth ~2 % of this policy's return
+(0.0083 × 600 = 5.0 against ~240 of mission reward), which is noise to it. ⚠️ Any
+future intervention argued from "the objective pays them to cruise" is arguing
+from a force the policy is measurably declining to collect.
+
+🔍 **And the replacement is more actionable.** Half the steps at the dash cap,
+23 % pressed against the map boundary, and near-full vertical acceleration
+commanded while parked at the 80 m ceiling, is not an energy trade — it is a
+policy with no gradient telling it where to be. Which is exactly what the
+`Φ` audit found: every shipped component is a `min`/`max`/routing reduction, so
+`Φ` is **exactly constant in four drones out of five**. See `REWARD.md`.
+
+⚠️ **Method note, and it is the same one this block keeps re-learning.** The
+0.0544 was computed from the power curve and never checked against what the
+policies fly. One render of route 12 and one histogram of speed cost ten minutes
+and inverted the reading.
+
+
+### ⛔ `r_cover = R/2` for `Φ_cover` — the derivation was clean and the sweep rejected it
+
+**Proposed** as the obviously principled choice: 📏 `R` = 524 m is Block F's
+measured median link range, so a coverage radius of 262 m makes two drones whose
+discs touch exactly one hop apart. It is the link criterion, stated in geometry.
+
+**Killed by measuring what it does to the learning signal.** A potential is not a
+feasibility test — it has to still have gradient *at the behaviour it rewards*,
+and at 262 m the term is saturated for B0. Swept on real state banks
+(`scripts/measure_potential.py`), B0 against a learned policy, `w_cover = 0.30`:
+
+| `r_cover` | 120 | 180 | 262 | 400 m |
+|---|---|---|---|---|
+| B0 − learned separation | **1.247** | 1.114 | 0.872 | 0.575 |
+| B0's p1, of a 3.0 maximum | **1.428** | 2.000 | 2.446 | 2.750 |
+| whole trip home from 500 m off-axis | **0.335** | 0.286 | 0.242 | 0.184 |
+
+120 m wins on all three. It is *corroborated* by Block B's 127 m along-street
+sightline median — but that is a coincidence noticed afterwards, not the reason,
+and it is recorded that way on purpose.
+
+**What it rules out.** "Derived from a measured constant" is not by itself an
+argument for a value **inside `Φ`**, where the only thing that matters is where
+the gradient lands. The optimum is protected by PBRS; the learning signal is not.
+
+
 ### ⛔ Per-drone potentials as the fix for role emergence — the channel opened, nothing moved
 
 **Proposed** on a measured deficit rather than a hunch. `scripts/probe_credit.py`
@@ -151,9 +223,12 @@ plain PPO on the same code path. It collapses identically (peak 52.5 %, final
 an older PPO, carrying its own stale `compute_gae`:
 
 ```python
-not_terminated = terminated.logical_not()                    # ppo_rnn.py:45
-not_done = ((terminated | truncated) if time_limit_bootstrap  # mappo.py:49
-            else terminated).logical_not()
+not_terminated = terminated.logical_not()  # ppo_rnn.py:45
+not_done = (
+    (terminated | truncated)
+    if time_limit_bootstrap  # mappo.py:49
+    else terminated
+).logical_not()
 ```
 
 At a truncation `not_terminated` is True, so GAE recurses *through* the reset and

@@ -453,9 +453,12 @@ and its own private `record_transition`, and skrl's truncation rework landed in
 `ppo.py` and `mappo.py` without ever being propagated to it.
 
 ```python
-not_terminated = terminated.logical_not()                       # ppo_rnn.py:45
-not_done = ((terminated | truncated) if time_limit_bootstrap     # mappo.py:49
-            else terminated).logical_not()
+not_terminated = terminated.logical_not()  # ppo_rnn.py:45
+not_done = (
+    (terminated | truncated)
+    if time_limit_bootstrap  # mappo.py:49
+    else terminated
+).logical_not()
 ```
 
 GAE recurses backwards as
@@ -1123,6 +1126,126 @@ commands, decision gates and the 2026-12-31 stopping rule -- is
   never tested.
 * **G1a is incomplete** — `bench_env.py --envs 1024 4096` still owed; the first
   CUDA session aborted on a `--breakdown` bug and only the 256-env row exists.
+
+---
+
+## G13 — the `Φ` audit, and the rebuild (2026-08-27)
+
+Five interventions had now been tried against the 16.1 pp gap and all five were
+nulls. This one started from the other end: instead of proposing a sixth
+mechanism, **measure what the potential is worth in the states the swarm actually
+occupies.** `scripts/measure_potential.py` banks those states off a real rollout
+and scores any `RewardWeights` over them, so a candidate is judged before a run.
+
+### 📏 What the audit found — `Φ` is off, and in two different ways
+
+**1. No gradient along the closing axis.** Sweep the observer 250 m → 60 m with
+the ray clear and a chain carrying 25 Mbps — the decision "close to B0's 89 m or
+stand off at 184 m", with everything else held where the policy already has it:
+
+| | swing over the band | per 8 m step | vs the energy term's 0.0544 |
+|---|---|---|---|
+| shipped `Φ` | **+0.320** | 0.0133 | **0.25×** |
+| `Φ v2` | +1.717 | 0.0774 | **1.42×** |
+
+**2. `Φ` is exactly constant in four drones out of five.** Every shipped
+component is a hard `min` (`nearest_dist_m`), a hard `max` (`best_clearance_m`)
+or the router's chosen path (`e2e_capacity_mbps`). A drone that is not currently
+the nearest, the clearest or on the chain can fly **anywhere** without moving `Φ`
+by one bit — and those are the drones that have to pre-position for the relay and
+the handoff. With four drones on the axis and the fifth stranded to one side, one
+8 m step home is worth:
+
+| | 200 m off-axis | 500 m | 800 m |
+|---|---|---|---|
+| shipped | **0.0000** | **0.0000** | **0.0000** |
+| `Φ v2`, per step | 0.0078 | 0.0010 | 0.0003 |
+| `Φ v2`, whole trip home | **+0.339** | **+0.446** | **+0.465** |
+
+⚠️ **This retro-explains the *shape* of every null in this block.** `w_hold`,
+`w_relay`, `d_ref 400` and `potential_scale 30` all scaled a potential whose
+gradient in the operating regime was 0.013–0.03 per step. The reason they failed
+is arithmetic, not mechanism.
+
+### ☠️ Two claims this block has been reasoning from are wrong
+
+**The learned policy is not collecting the energy bonus.** Measured per drone per
+step on the eval split at stage 4:
+
+| | speed p50 | steps > 24 m/s | energy term | steps at the map wall | mean \|a_z\| |
+|---|---|---|---|---|---|
+| B0 | **5.81 m/s** | 3.1 % | **−0.1250** | **0.9 %** | 0.005 |
+| GNN | **24.71 m/s** | **56.7 %** | **−0.1333** | **23.1 %** | **0.821** |
+| MLP | — | — | — | 15.6 % | 0.626 |
+| random | 17.13 m/s | 13.9 % | −0.1158 | — | — |
+
+The policy flies at the **25 m/s dash cap on 57 % of steps**, where
+`P/P_hover ≈ 0.99`, and pays **more** energy than B0. It is nowhere near the
+13.3 m/s minimum-power airspeed. 0.0544/step stays the right **bar to size `Φ`
+against** — it is the largest per-step force the objective can apply — but it is
+not the mechanism behind the 184 m stand-off. `DECISIONS.md`.
+
+**`Φ` is loud, not quiet.** Its per-step magnitude is `|ΔΦ|` p90 = **0.365** for
+the GNN and 0.052 for B0 — the learned policy receives *seven times more* shaping
+than B0 while doing worse. The variance is the two binary terms flickering
+(a sightline acquired and lost, a chain forming and breaking); the **directional**
+content along the closing axis is 0.0133. "Switched off" is right about the
+gradient and wrong about the amplitude, and the distinction matters because
+scaling `k` amplifies the flicker and not the direction.
+
+### 🔍 And one render, which the aggregates could not show
+
+`render_episode.py --policy runs/full-d3/checkpoint.pt --compare --route 12`:
+B0's tracks stay inside the HVT corridor with one observer held for the whole
+episode. The learned policy's are **long sweeping arcs across the entire map**,
+including the western half the HVT never enters, with straight segments pinned
+along the box boundary where the position clamp zeroes the velocity. The e2e
+trace is *good* — 25–30 Mbps — in long stretches and then drops to zero: the
+failure is intermittent loss from drifting out, not a chain that is chronically
+too weak.
+
+### The rebuild — `reward.PHI_V2`, off by default
+
+Full derivation, sizing rule and per-component argument in
+[`REWARD.md`](REWARD.md). In brief:
+
+```
+Φ = k · [ 0.05·Φ_approach + 0.20·Φ_observe + 0.20·Φ_standoff
+                          + 0.15·Φ_link    + 0.40·Φ_cover ]        k = 10
+```
+
+* **`Φ_standoff`** — the closing decision, a logistic centred on Block B's
+  measured **127 m** sightline median, gated on `observed`. ⚠️ Not `w_hold`
+  again: additive with its own budget rather than a factor multiplied *into*
+  `Φ_observe`, and 0.077/step against `w_hold`'s 0.03.
+* **`Φ_cover`** — coverage of the MCV→HVT axis, the only component that is not
+  blind to four drones out of five. Soft-OR over drones plus a per-drone muster
+  half, Cauchy kernel so the far field is never numerically zero.
+* 🔒 **The five weights sum to 1.0 and `k` stays 10.** `Φ` is redistributed, never
+  inflated: PBRS pays `(γ−1)·Φ` per step for *holding* a state, a drag
+  proportional to `Φ` and therefore largest for the best policy (B0's mean
+  shaping is **−0.018/step**). That is the most likely reason
+  `potential_scale = 30` was a null rather than an improvement.
+
+### The offline test that could have separated the four nulls
+
+⚠️ **The ideal `Φ` is `V*`** — the shaped problem's value function is `V − Φ`, so
+`Φ = V*` makes every advantage immediate. So score a candidate against the
+discounted future `mission_capable` return of banked states, with no training run:
+
+| pooled over both banks | shipped | `Φ v2` |
+|---|---|---|
+| corr(`Φ`, discounted future capable) | +0.270 | **+0.301** |
+| mean `Φ`(B0) − mean `Φ`(learned) | +2.101 | **+3.584** |
+
+The correlation gain is modest and is reported as such. The **separation** is what
+moved, by 71 %. Costs a minute; would have been available for every one of the
+five nulls.
+
+⚠️ **Provenance.** All of the above is MPS, eval split, stage 4, F4, `num_envs`
+32, seed 0, against `runs/full-d3` (a 12 M-step feedforward GNN). It is a
+*design* measurement, not a result: no `Φ v2` policy has been trained yet, and
+the gate for that is `BLOCK_G_PLAN.md` § Gate 3.
 
 ---
 

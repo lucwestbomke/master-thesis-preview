@@ -20,6 +20,7 @@ import torch
 from .reward import (
     CAPACITY_THRESHOLD_MBPS,
     DEFAULT_WEIGHTS,
+    PHI_V2,
     RewardWeights,
     Snapshot,
     episode_return,
@@ -600,3 +601,232 @@ def test_a_snapshot_without_on_path_fails_loudly():
     )
     with pytest.raises(ValueError, match="on_path"):
         relay_shaping(bare, replace_snapshot, w, 0.997)
+
+
+# --------------------------------------------------------------------------- #
+# Phi v2 -- Phi_standoff and Phi_cover (docs/REWARD.md, rebuilt 2026-08-27)
+# --------------------------------------------------------------------------- #
+#
+# 📏 The two defects these exist to fix, both measured by
+# `scripts/measure_potential.py` on the eval split at stage 4 under F4:
+#
+#   1. Along the closing axis -- observer 250 -> 60 m, ray clear, chain at
+#      25 Mbps -- the shipped `Phi` moves **0.320 in total**, 0.0133 per 8 m
+#      step, against the 0.0544/step the energy term can pay for cruising.
+#   2. Every shipped component is a `min` / `max` / routing reduction, so `Phi`
+#      is exactly constant in four drones out of five. Learned policies sit
+#      against the map boundary on 15-23 % of steps; B0 on 0.9 %.
+#
+# The tests below pin the fixes as *quantities*, not as descriptions: each one
+# would fail if the component were re-tuned back under its target.
+
+FREE_RAY_M = 1.0e4  # what `occlusion` returns for "nothing in the way"
+
+#: 📏 `docs/REWARD.md`: at `w_energy = 0.15` the rotary-wing power curve pays
+#: this much per step for cruising at 13.3 m/s instead of holding station. It is
+#: the bar `Phi`'s per-step gradient is sized against.
+ENERGY_STEP_DIFFERENTIAL = 0.0544
+
+#: One step of travel at the 20 m/s cruise and the 0.4 s tick.
+STEP_M = 8.0
+
+
+def _v2_snap(observer_dist_m: float, drone_xy=None, cap=25.0):
+    """A succeeding state: ray clear, chain up, observer at a given range."""
+    if drone_xy is None:
+        drone_xy = [(200.0, 0.0), (450.0, 0.0), (700.0, 0.0), (940.0, 0.0), (600.0, 0.0)]
+    n = len(drone_xy)
+    return Snapshot(
+        observed=torch.ones(1, dtype=torch.bool),
+        e2e_capacity_mbps=torch.full((1,), float(cap)),
+        nearest_dist_m=torch.full((1,), float(observer_dist_m)),
+        best_clearance_m=torch.full((1,), FREE_RAY_M),
+        observer_dist_m=torch.full((1,), float(observer_dist_m)),
+        drone_pos=torch.tensor([[[x, y, 80.0] for x, y in drone_xy]]),
+        mcv_pos=torch.zeros(1, 3),
+        hvt_pos=torch.tensor([[1000.0, 0.0, 0.0]]),
+        battery=torch.full((1, n), 0.8),
+        speed_ms=torch.zeros(1, n),
+        accel_ms2=torch.zeros(1, n),
+    )
+
+
+def test_v2_ships_off_and_reproduces_the_shipped_potential_bitwise():
+    """The default-off contract `test_golden.py` depends on."""
+    assert DEFAULT_WEIGHTS.w_standoff == 0.0
+    assert DEFAULT_WEIGHTS.w_cover == 0.0
+    snap = _v2_snap(184.0)
+    explicit = replace(DEFAULT_WEIGHTS, w_standoff=0.0, w_cover=0.0)
+    assert torch.equal(potential(snap, DEFAULT_WEIGHTS), potential(snap, explicit))
+
+
+def test_v2_redistributes_the_potential_rather_than_inflating_it():
+    """🔒 The sizing rule. PBRS pays `gamma*Phi(s') - Phi(s)`, so a policy that
+    HOLDS a state pays `(gamma-1)*Phi` every step -- a drag proportional to `Phi`
+    and therefore largest for the *best* policy. Keeping the component weights
+    summing to 1.0 at `k = 10` keeps that drag exactly where the shipped
+    potential already put it."""
+    total = (
+        PHI_V2.w_approach + PHI_V2.w_observe + PHI_V2.w_standoff + PHI_V2.w_link + PHI_V2.w_cover
+    )
+    assert total == pytest.approx(1.0)
+    assert PHI_V2.potential_scale == DEFAULT_WEIGHTS.potential_scale
+
+
+def test_v2_closing_gradient_beats_the_energy_term():
+    """📏 THE number this rebuild exists for. The shipped potential pays 0.0133
+    per 8 m of closing against the objective's 0.0544; v2 must clear 0.0544."""
+    ranges = torch.arange(60.0, 258.0, STEP_M)
+    phi = torch.cat([potential(_v2_snap(float(r)), PHI_V2) for r in ranges])
+    per_step = (phi[:-1] - phi[1:]).median()
+    assert float(per_step) > ENERGY_STEP_DIFFERENTIAL, "v2 must out-pull the energy term"
+
+    shipped = torch.cat([potential(_v2_snap(float(r)), DEFAULT_WEIGHTS) for r in ranges])
+    assert float((shipped[:-1] - shipped[1:]).median()) < ENERGY_STEP_DIFFERENTIAL / 3.0
+    assert float(phi[0] - phi[-1]) > 4.0 * float(shipped[0] - shipped[-1])
+
+
+def test_standoff_is_steepest_at_the_measured_sightline_threshold():
+    """📏 Block B measured the along-street sightline median at 127 m. B0's
+    observer stands inside it (88.8 m) and the learned observer outside it
+    (184 m), so the gradient belongs there rather than spread over the map."""
+    w = replace(DEFAULT_WEIGHTS, w_standoff=0.2)
+    ranges = torch.arange(40.0, 300.0, 2.0)
+    phi = torch.cat([potential(_v2_snap(float(r)), w) for r in ranges])
+    steepest = float(ranges[(phi[:-1] - phi[1:]).argmax()])
+    assert abs(steepest - PHI_V2.d_standoff_m) < 6.0
+
+
+def test_standoff_cannot_pay_for_closing_while_blind():
+    """`docs/REWARD.md`'s first trap: a drone 20 m away on the wrong side of a
+    building sees nothing, so closing in blind must be worth exactly nothing.
+
+    ⚠️ This is why the gate is `observed` and not the graded clearance factor.
+    Gating on `sigmoid(clearance / tau_c)` leaks: a ray blocked by 20 m of
+    building still reads 0.21, so a blind drone would collect a fifth of the
+    closing pull. Caught by this test, not by review."""
+    w = replace(DEFAULT_WEIGHTS, w_standoff=0.2)
+    blind = {
+        "observed": torch.zeros(1, dtype=torch.bool),
+        "best_clearance_m": torch.full((1,), -20.0),
+    }
+    blind_far = replace(_v2_snap(300.0), **blind)
+    blind_near = replace(_v2_snap(50.0), **blind)
+    assert float(potential(blind_near, w) - potential(blind_far, w)) == pytest.approx(
+        float(potential(blind_near, DEFAULT_WEIGHTS) - potential(blind_far, DEFAULT_WEIGHTS)),
+        abs=1e-6,
+    )
+
+
+def test_standoff_is_additive_not_a_factor_on_observe():
+    """⚠️ The structural difference from `w_hold`, which was a null at 5 seeds.
+
+    `w_hold` multiplied the idea INTO `Phi_observe`, so acquiring a distant
+    sightline was worth *less* than before; at `w_hold = 1.0` it is worth nothing
+    and the swarm is discouraged from acquiring at all. `Phi_standoff` only ever
+    adds."""
+    far = _v2_snap(400.0)
+    hold = replace(DEFAULT_WEIGHTS, w_hold=0.6)
+    stand = replace(DEFAULT_WEIGHTS, w_standoff=0.2)
+    base = float(potential(far, DEFAULT_WEIGHTS))
+    assert float(potential(far, hold)) < base, "w_hold removes potential from a distant sightline"
+    assert float(potential(far, stand)) >= base, "Phi_standoff must only ever add"
+
+
+def test_cover_is_the_only_component_that_sees_a_drone_holding_no_role():
+    """📏 The measured blindness. Four drones work the axis; the fifth is
+    stranded 500 m to the side. Under the shipped potential moving it home is
+    worth EXACTLY zero -- every component is a reduction that ignores it."""
+    working = [(200.0, 0.0), (450.0, 0.0), (700.0, 0.0), (940.0, 0.0)]
+    stranded = _v2_snap(60.0, drone_xy=[*working, (600.0, 500.0)])
+    home = _v2_snap(60.0, drone_xy=[*working, (600.0, 0.0)])
+    assert torch.equal(potential(stranded, DEFAULT_WEIGHTS), potential(home, DEFAULT_WEIGHTS))
+    assert float(potential(home, PHI_V2) - potential(stranded, PHI_V2)) > 0.3
+
+
+def test_cover_has_gradient_at_every_distance_on_the_map():
+    """The kernel is Cauchy, not Gaussian, on purpose: a drone at the map edge is
+    exactly the one that has to be told to come back, and an exponential tail is
+    numerically zero out there."""
+    working = [(200.0, 0.0), (450.0, 0.0), (700.0, 0.0), (940.0, 0.0)]
+
+    def phi(off):
+        return float(potential(_v2_snap(60.0, drone_xy=[*working, (600.0, off)]), PHI_V2))
+
+    for off in (100.0, 300.0, 600.0, 900.0):
+        assert phi(off - STEP_M) > phi(off), f"no gradient home at {off} m off-axis"
+
+
+def test_cover_refuses_a_swarm_huddled_at_either_end():
+    """The two halves of `axis_coverage` are each other's degenerate case:
+    coverage alone ignores a redundant drone, muster alone is maximised by
+    everyone sitting ON the MCV, which covers none of the axis."""
+    w = replace(DEFAULT_WEIGHTS, w_cover=0.4)
+    spread = _v2_snap(
+        60.0, drone_xy=[(100.0, 0.0), (300.0, 0.0), (500.0, 0.0), (700.0, 0.0), (900.0, 0.0)]
+    )
+    at_mcv = _v2_snap(60.0, drone_xy=[(10.0, 0.0)] * 5)
+    at_hvt = _v2_snap(60.0, drone_xy=[(990.0, 0.0)] * 5)
+    assert float(potential(spread, w)) > float(potential(at_mcv, w))
+    assert float(potential(spread, w)) > float(potential(at_hvt, w))
+
+
+def test_cover_pays_less_for_a_second_drone_in_the_same_place():
+    """Anti-clustering, out of a TEAM quantity with no agent index in it:
+    `d cover / d f_j` is `prod_{i != j} (1 - f_i)`, so a drone's marginal value
+    at a point is how uncovered that point is by everybody else. That is a
+    differentiated role pressure `docs/REWARD.md`'s homogeneity rule allows."""
+    w = replace(DEFAULT_WEIGHTS, w_cover=0.4)
+    # Four drones hold 200-940 m of the axis; the near end, 0-200 m, is open.
+    held = [(200.0, 0.0), (450.0, 0.0), (700.0, 0.0), (940.0, 0.0)]
+    doubling_up = _v2_snap(60.0, drone_xy=[*held, (940.0, 0.0)])
+    filling_the_gap = _v2_snap(60.0, drone_xy=[*held, (60.0, 0.0)])
+    assert float(potential(filling_the_gap, w)) > float(potential(doubling_up, w))
+
+
+def test_cover_does_not_depend_on_agent_index():
+    """🔒 `docs/REWARD.md`: the reward must not depend on agent index, or the
+    "roles emerge rather than being assigned" claim collapses."""
+    xy = [(120.0, 40.0), (450.0, -80.0), (700.0, 10.0), (940.0, 200.0), (600.0, 300.0)]
+    base = _v2_snap(60.0, drone_xy=xy)
+    shuffled = _v2_snap(60.0, drone_xy=[xy[i] for i in (3, 0, 4, 1, 2)])
+    assert torch.allclose(potential(base, PHI_V2), potential(shuffled, PHI_V2), atol=1e-6)
+
+
+def test_v2_leaves_the_pbrs_telescoping_intact():
+    """The whole safety argument: any `Phi` is optimum-preserving, so a round
+    trip must earn exactly nothing at `gamma = 1`."""
+    a = _v2_snap(
+        250.0, drone_xy=[(200.0, 0.0), (450.0, 0.0), (700.0, 0.0), (940.0, 0.0), (600.0, 400.0)]
+    )
+    b = _v2_snap(70.0)
+    out = shaping(a, b, PHI_V2, 1.0) + shaping(b, a, PHI_V2, 1.0)
+    assert torch.allclose(out, torch.zeros_like(out), atol=1e-5)
+
+
+def test_v2_is_still_bounded_by_its_scale():
+    """Five components, each in [0, 1], weights summing to 1 -- so `Phi` stays
+    inside `[0, k]` and the gamma-decay drag is unchanged."""
+    for snap in (_v2_snap(40.0), _v2_snap(900.0, cap=0.0)):
+        phi = float(potential(snap, PHI_V2))
+        assert 0.0 <= phi <= PHI_V2.potential_scale
+
+
+def test_v2_fails_loudly_without_the_geometry():
+    bare = Snapshot(
+        observed=torch.ones(1, dtype=torch.bool),
+        e2e_capacity_mbps=torch.full((1,), 40.0),
+        nearest_dist_m=torch.full((1,), 120.0),
+        best_clearance_m=torch.full((1,), FREE_RAY_M),
+        observer_dist_m=torch.full((1,), 120.0),
+        battery=torch.full((1, N), 0.8),
+        speed_ms=torch.zeros(1, N),
+        accel_ms2=torch.zeros(1, N),
+    )
+    with pytest.raises(ValueError, match="drone_pos"):
+        potential(bare, PHI_V2)
+    with pytest.raises(ValueError, match="observer_dist_m"):
+        potential(
+            replace(bare, observer_dist_m=None),
+            replace(DEFAULT_WEIGHTS, w_standoff=0.2),
+        )

@@ -57,12 +57,19 @@ RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 class TrainConfig:
     """One cell of the matrix, plus the learner settings.
 
-    Everything here is a *learning* knob. ⛔ Nothing in the reward is reachable
-    from this file except through `--tau-clearance` / `--tau-capacity` /
-    `--potential-scale`, which live in the potential and so cannot move the
-    optimum (PBRS), and `--lambda-var`, which is the one weight the design
-    permits sweeping. Every other reward weight is pinned by the behavioural
-    orderings in `docs/REWARD.md` and asserted in `test_reward.py`.
+    Everything here is a *learning* knob. ⛔ The only reward quantities reachable
+    from this file are the ones **inside `Phi`** -- `--phi`, `--potential-scale`,
+    `--tau-clearance`, `--tau-capacity`, `--d-ref`, `--w-approach`,
+    `--w-observe`, `--w-link`, `--w-standoff`, `--d-standoff`, `--tau-standoff`,
+    `--w-cover`, `--r-cover`, `--w-hold`, `--d-hold`, `--w-relay` -- which the
+    PBRS proof makes optimum-preserving, and `--lambda-var`, the one OBJECTIVE
+    weight the design permits sweeping. Every other objective weight is pinned by
+    the behavioural orderings in `docs/REWARD.md` and asserted in
+    `test_reward.py`.
+
+    ⚠️ `docs/REWARD.md`'s "sweep nothing but lambda" governs the objective
+    weights only; it was read as locking the `Phi` component weights until that
+    was corrected on 2026-08-25.
     """
 
     fidelity: Fidelity = "F4"
@@ -141,6 +148,23 @@ class TrainConfig:
     w_approach: float | None = None
     w_observe: float | None = None
     w_link: float | None = None
+    #: `Phi` v2 -- the whole rebuilt potential as one preset (`reward.PHI_V2`).
+    #: `None` keeps the shipped potential BITWISE. Individual `w_*` flags are
+    #: applied on top, so `--phi v2 --w-cover 0.5` is a one-knob variation on it.
+    #: ⚠️ The preset's five component weights sum to 1.0 and `potential_scale`
+    #: stays 10 on purpose -- see `reward.PHI_V2`. Overriding one weight breaks
+    #: that sum and changes the gamma-decay drag as well as the balance.
+    phi: str | None = None
+    w_standoff: float | None = None
+    d_standoff_m: float | None = None
+    tau_standoff_m: float | None = None
+    w_cover: float | None = None
+    r_cover_m: float | None = None
+    #: Discretisation of `Phi_cover`'s axis, not a design knob -- but it is inside
+    #: `Phi` and therefore PBRS-safe, so it gets a flag like everything else
+    #: there. `test_train.py` derives that rule from `RewardWeights` and would
+    #: fail if it were left unreachable.
+    n_cover_samples: int | None = None
     lambda_var: float | None = None
 
     log_every: int = 20
@@ -166,7 +190,14 @@ def build_weights(cfg: TrainConfig):
     """`RewardWeights` with only the safe knobs moved."""
     from dataclasses import replace
 
-    from ..env.reward import DEFAULT_WEIGHTS
+    from ..env.reward import DEFAULT_WEIGHTS, PHI_V2
+
+    base = DEFAULT_WEIGHTS
+    if cfg.phi is not None:
+        presets = {"shipped": DEFAULT_WEIGHTS, "v2": PHI_V2}
+        if cfg.phi not in presets:
+            raise ValueError(f"unknown --phi {cfg.phi!r}; expected one of {sorted(presets)}")
+        base = presets[cfg.phi]
 
     changes: dict[str, float] = {}
     if cfg.tau_clearance_m is not None:
@@ -183,13 +214,23 @@ def build_weights(cfg: TrainConfig):
         changes["d_hold_m"] = cfg.d_hold_m
     if cfg.w_relay is not None:
         changes["w_relay"] = cfg.w_relay
-    for name in ("w_approach", "w_observe", "w_link"):
+    for name in (
+        "w_approach",
+        "w_observe",
+        "w_link",
+        "w_standoff",
+        "d_standoff_m",
+        "tau_standoff_m",
+        "w_cover",
+        "r_cover_m",
+        "n_cover_samples",
+    ):
         value = getattr(cfg, name)
         if value is not None:
             changes[name] = value
     if cfg.lambda_var is not None:
         changes["battery_variance"] = cfg.lambda_var
-    return replace(DEFAULT_WEIGHTS, **changes) if changes else DEFAULT_WEIGHTS
+    return replace(base, **changes) if changes else base
 
 
 def _kl_scheduler(agents: list[str], kl_threshold: float) -> dict:
@@ -656,6 +697,31 @@ def main() -> None:
             f"--{_name}", type=float, default=None, help=f"{_help}; inside Phi, PBRS-safe"
         )
     ap.add_argument(
+        "--phi",
+        choices=["shipped", "v2"],
+        default=None,
+        help="the whole potential as one preset. `v2` is the 2026-08-27 rebuild "
+        "(reward.PHI_V2): adds Phi_standoff and Phi_cover and redistributes the "
+        "component weights, holding their sum at 1.0 and potential_scale at 10. "
+        "Omit for the shipped potential, which is reproduced bitwise.",
+    )
+    for _name, _help in (
+        ("w-standoff", "Phi_standoff component weight; 0 = shipped"),
+        ("d-standoff", "range where Phi_standoff is steepest (m)"),
+        ("tau-standoff", "width of the Phi_standoff logistic (m)"),
+        ("w-cover", "Phi_cover component weight; 0 = shipped"),
+        ("r-cover", "Phi_cover coverage radius (m)"),
+    ):
+        ap.add_argument(
+            f"--{_name}", type=float, default=None, help=f"{_help}; inside Phi, PBRS-safe"
+        )
+    ap.add_argument(
+        "--n-cover-samples",
+        type=int,
+        default=None,
+        help="sample points along the MCV-HVT axis for Phi_cover; inside Phi, PBRS-safe",
+    )
+    ap.add_argument(
         "--w-relay",
         type=float,
         default=None,
@@ -718,6 +784,13 @@ def main() -> None:
             w_approach=a.w_approach,
             w_observe=a.w_observe,
             w_link=a.w_link,
+            phi=a.phi,
+            w_standoff=a.w_standoff,
+            d_standoff_m=a.d_standoff,
+            tau_standoff_m=a.tau_standoff,
+            w_cover=a.w_cover,
+            r_cover_m=a.r_cover,
+            n_cover_samples=a.n_cover_samples,
             lambda_var=a.lambda_var,
             log_every=a.log_every,
             checkpoint_every=a.checkpoint_every,

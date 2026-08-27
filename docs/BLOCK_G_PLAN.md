@@ -324,12 +324,111 @@ block could see one:
 
 ⚠️ Judge on the **worst seed**, as always in this block, and on `>= 5` seeds.
 
+## 4c. Gate 3 — the `Φ` rebuild, declared 2026-08-27 **before** the runs
+
+### What changed the design
+
+Gates 1 and 2 proposed mechanisms. This one measured the instrument first.
+`scripts/measure_potential.py` banks the states a policy actually visits and
+scores any `RewardWeights` over them, and it found the shipped potential moves
+**0.320 in total** across the closing band — 0.0133 per 8 m step against the
+0.0544 the objective can pay — and is **exactly constant in four drones out of
+five**, because every component is a `min`/`max`/routing reduction. Full audit in
+`BLOCK_G.md` § G13 and `REWARD.md`.
+
+⚠️ **Two claims this plan was reasoning from are now measured wrong**, and both
+are in `DECISIONS.md`: the learned policy is *not* collecting the energy bonus
+(it flies at the 25 m/s dash cap on 57 % of steps and pays **more** than B0), and
+`Φ` is *loud* rather than quiet (|ΔΦ| p90 is 0.365 for the GNN against B0's
+0.052) — its problem is direction, not amplitude.
+
+`Φ v2` is one preset, `--phi v2`, off by default and bitwise-identical to the
+shipped potential when off.
+
+### The runs
+
+**Step 1 — the fast loop, one seed, and LOOK at it.** 📏 Four hypotheses drawn
+from aggregate statistics went 0-for-4 in this block and one render found what
+they all missed, so this step is not optional and its output is a *picture*.
+
+```bash
+BASE="--fidelity F4 --arch gnn --num-envs 4096 --rollouts 64 --mini-batches 32 \
+      --env-steps 12000000 --boundaries 0.10 0.20 0.35 --min-std 0.2 --device cuda"
+
+uv run python -m src.training.train $BASE --seed 0 --phi v2 --name g13-v2-s0
+uv run python scripts/render_episode.py --policy runs/g13-v2-s0/checkpoint.pt \
+    --compare --route 12
+```
+
+⛔ **Do not proceed to step 2 on the checkpoint's `mission_capable` alone.** The
+question the render answers is whether the drones are *in the corridor* — B0's
+tracks stay inside it, the shipped policy's sweep the whole map and pin against
+the box boundary. If the arcs and the boundary-pinning are unchanged, `Φ_cover`
+did not reach the policy and the weights are the thing to move, not the seeds.
+
+**Step 2 — 5 seeds, with the control already in hand.**
+
+```bash
+for s in 0 1 2 3 4; do
+  uv run python -m src.training.train $BASE --seed $s --phi v2 --name g13-v2-s$s
+done
+
+OUT="--device cuda --train-routes --num-envs 128 --out results/g13_gate3.jsonl"
+uv run python scripts/eval_policy.py runs/g13-v2-s*/checkpoint.pt --group v2 $OUT
+```
+
+Control is **`g8-ff-shipped` at 40.7 %**, already run — same architecture, same
+cadence, same seeds, so `--phi` is the only variable.
+
+### The rule
+
+**Primary readout is `observer_range_m`.** 📏 That is what `Φ_standoff` is aimed
+at, `mission_capable` is downstream of it, and this block has twice judged an
+intervention on a statistic that turned out to measure geometry. Secondary is
+`off_axis_m`, which is what `Φ_cover` is aimed at.
+
+⛔ **Not `hop_mean | observed`** (it measures geometry — random 1.83, every
+learned policy 1.86–1.93) and ⛔ **not `chain_occluded`** (it confounds with hop
+count, `corr = 0.963`). Both are in `DECISIONS.md`.
+
+| | keep | kill |
+|---|---|---|
+| `Φ v2` | `observer_range_m` ≤ **140 m** *and* `mission_capable` ≥ **40.7 %** (no worse than control) | `observer_range_m` > 160 m, or capable below control on the **worst seed** |
+| `Φ_standoff` vs `Φ_cover` | if kept, isolate them: `--phi v2 --w-cover 0` and `--phi v2 --w-standoff 0`, 5 seeds each | — |
+| the weights | — | if `observer_range_m` moves and `off_axis_m` does not, `Φ_cover` is the term that failed, not the design |
+
+**Why 140 m.** 📏 The learned observer stands at **184 m** and B0 at **88.8 m**;
+Block B measured the along-street sightline median at **127 m**, and the whole
+`observed` gap is that B0 sits inside it and the learned policy outside it. 140 m
+is the far edge of "inside the threshold" and is the smallest move that could
+plausibly convert the gap. A `Φ` term worth 1.42× the objective's strongest
+per-step force that cannot move the number it directly grades has been refuted,
+not under-tuned.
+
+⚠️ Judge on the **worst seed**, at ≥5 seeds, and report `role_entropy` alongside —
+📏 B0 **0.10**, the GNN **0.50** at stage 4 against random's 0.60. `Φ_cover`'s
+marginal value is *how uncovered a point is by everybody else*, so it is the first
+term in this block with a mechanism by which `role_entropy` could move at all.
+
+⛔ **The pre-declared failure reading.** If `observer_range_m` moves inside the
+threshold and `mission_capable` does **not**, then the stand-off was never the
+binding constraint and the `observed` gap has another cause. Record that as the
+result — it is a stronger finding than a sixth null, and it would retire the
+geometry-threshold diagnosis rather than inviting a seventh intervention.
+
+---
+
 ## 5. ⛔ Stopping rule — 2026-12-31
 
-> If recurrence, `w_hold` and the `Φ_link` term have **each** been measured at
-> ≥5 seeds and the best full-mission result is still below B0: **stop
-> optimising.** Freeze on schedule, re-scope B0 per §2, and promote the tenure
-> diagnosis to a reported finding.
+> If recurrence, `w_hold`, the `Φ_link` term **and the `Φ` v2 rebuild (§4c)**
+> have **each** been measured at ≥5 seeds and the best full-mission result is
+> still below B0: **stop optimising.** Freeze on schedule, re-scope B0 per §2,
+> and promote the tenure diagnosis to a reported finding.
+
+⚠️ `Φ` v2 is added to this list rather than restarting the clock. It is the last
+*reward-side* candidate: the audit in §4c measured what the potential is worth
+and rebuilt it to the bar, so a null here is evidence that shaping is not the
+binding constraint, not an invitation to a third potential.
 
 Three months of slack before the freeze, and it converts an open-ended question
 into a bounded one — which is what stops it consuming the thesis window.

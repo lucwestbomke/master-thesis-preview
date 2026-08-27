@@ -825,6 +825,12 @@ class BatchedSwarmEnv:
             # The one per-drone quantity the reward can use. Only read when
             # `w_relay > 0`; free here, since routing already produced it.
             on_path=on_path[:, :n],
+            # Raw geometry for `Phi_cover`, which is a function of where EVERY
+            # drone is rather than of a reduction over them -- read only when
+            # `w_cover > 0`. Views, not copies: no work when the term is off.
+            drone_pos=self.drone_pos,
+            mcv_pos=self.mcv_pos,
+            hvt_pos=self.hvt_pos,
             battery=self.battery,
             speed_ms=self.drone_vel.norm(dim=-1),
             accel_ms2=self.last_accel,
