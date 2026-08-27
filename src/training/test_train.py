@@ -105,22 +105,39 @@ def test_only_the_safe_reward_knobs_are_reachable_from_the_trainer():
         assert getattr(moved, name) == getattr(DEFAULT_WEIGHTS, name)
 
 
-def test_every_reward_knob_reachable_from_TrainConfig_has_a_cli_flag():
-    """A config field with no `--flag` is invisible, and fails at the wrong layer.
+def test_every_PBRS_safe_reward_knob_is_settable_from_the_command_line():
+    """Every knob inside `Phi` must have a `--flag`. Derived, not hand-listed.
 
-    `--w-relay` shipped with its `TrainConfig` field, its `build_weights` wiring
-    and its `TrainConfig(...)` call site all present, and **no `add_argument`** --
-    so `train.py` accepted the flag nowhere while every unit test passed. The
-    failure surfaced on a GPU box as `unrecognized arguments`, one command into a
-    5-seed sweep.
+    ⚠️ Two separate misses, both of the same shape:
 
-    This walks the parser instead of trusting it: every reward knob
-    `build_weights` can move must be settable from the command line, because a
-    knob that cannot be set from the command line cannot be swept, and a sweep is
+    * `--w-relay` shipped with its `TrainConfig` field, its `build_weights`
+      wiring and its call site -- and NO `add_argument`. It failed on a GPU box
+      as `unrecognized arguments`, one command into a 5-seed sweep.
+    * `w_approach` / `w_observe` / `w_link` were documented as free (they sit
+      inside `Phi`, so PBRS makes them as safe as `potential_scale`) while being
+      reachable from *nowhere*: no `build_weights` branch, no flag. A whole
+      session recommended tuning them.
+
+    An earlier version of this test hand-listed the knobs, so it could only catch
+    the first kind. This derives the list from `RewardWeights` itself: anything
+    that is not an objective weight and not a physical reference lives inside the
+    potential, is optimum-preserving, and therefore must be sweepable -- because a
+    knob that cannot be set from the command line cannot be swept, and sweeping is
     the only way any of them get used.
     """
     import argparse
+    from dataclasses import fields
     from unittest.mock import patch
+
+    from ..env.reward import RewardWeights
+
+    # ⛔ These change what is OPTIMAL. `docs/REWARD.md` pins them by behavioural
+    # ordering and permits sweeping `battery_variance` (lambda) alone.
+    OBJECTIVE = {"mission", "idle", "energy", "battery_variance", "effort"}
+    # Not a knob: a normalisation constant tied to the airframe.
+    REFERENCE = {"max_accel_ms2"}
+    phi_knobs = {f.name for f in fields(RewardWeights)} - OBJECTIVE - REFERENCE
+    assert phi_knobs, "RewardWeights lost every potential term"
 
     captured: dict[str, argparse.ArgumentParser] = {}
 
@@ -132,18 +149,20 @@ def test_every_reward_knob_reachable_from_TrainConfig_has_a_cli_flag():
         train_module.main()
     flags = {action.dest for action in captured["parser"]._actions}
 
-    # The knobs `build_weights` reads off the config, and what they are called on
-    # the command line where the two differ.
-    knobs = {
-        "tau_clearance_m": "tau_clearance",
-        "tau_capacity_mbps": "tau_capacity",
-        "potential_scale": "potential_scale",
-        "d_ref_m": "d_ref",
-        "w_hold": "w_hold",
-        "d_hold_m": "d_hold",
-        "w_relay": "w_relay",
-        "lambda_var": "lambda_var",
-    }
-    for field, flag in knobs.items():
-        assert hasattr(TrainConfig(), field), f"TrainConfig lost {field}"
-        assert flag in flags, f"TrainConfig.{field} has no --{flag.replace('_', '-')} flag"
+    # `d_ref_m` -> `--d-ref`, `tau_clearance_m` -> `--tau-clearance`, etc.
+    def reachable(field: str) -> bool:
+        return any(
+            f in flags for f in (field, field.removesuffix("_m"), field.removesuffix("_mbps"))
+        )
+
+    missing = sorted(f for f in phi_knobs if not reachable(f))
+    assert not missing, (
+        f"inside Phi and PBRS-safe, but not settable from the CLI: {missing}. "
+        "A knob nothing can set is not a free parameter, it is dead code."
+    )
+
+    cfg_fields = {f.name for f in fields(TrainConfig)}
+    unwired = sorted(
+        f for f in phi_knobs if f not in cfg_fields and f.removesuffix("_m") not in cfg_fields
+    )
+    assert not unwired, f"no TrainConfig field carries: {unwired}"

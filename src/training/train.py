@@ -133,6 +133,14 @@ class TrainConfig:
     # deficit (`scripts/probe_credit.py`). PBRS-safe, including in the
     # multi-agent case (Devlin & Kudenko 2011), so it cannot move the optimum.
     w_relay: float | None = None
+    # Phi's component weights. ⚠️ These sit INSIDE the potential, so PBRS makes
+    # them as free as `potential_scale` -- `REWARD.md`'s "sweep nothing but
+    # lambda" governs the OBJECTIVE weights only (corrected 2026-08-25). They
+    # were documented as free while being reachable from nowhere: no
+    # `build_weights` branch and no CLI flag.
+    w_approach: float | None = None
+    w_observe: float | None = None
+    w_link: float | None = None
     lambda_var: float | None = None
 
     log_every: int = 20
@@ -175,6 +183,10 @@ def build_weights(cfg: TrainConfig):
         changes["d_hold_m"] = cfg.d_hold_m
     if cfg.w_relay is not None:
         changes["w_relay"] = cfg.w_relay
+    for name in ("w_approach", "w_observe", "w_link"):
+        value = getattr(cfg, name)
+        if value is not None:
+            changes[name] = value
     if cfg.lambda_var is not None:
         changes["battery_variance"] = cfg.lambda_var
     return replace(DEFAULT_WEIGHTS, **changes) if changes else DEFAULT_WEIGHTS
@@ -635,6 +647,14 @@ def main() -> None:
     ap.add_argument(
         "--d-hold", type=float, default=None, help="range scale for the hold factor (m)"
     )
+    for _name, _help in (
+        ("w-approach", "Phi_approach component weight (default 0.25)"),
+        ("w-observe", "Phi_observe component weight (default 0.35)"),
+        ("w-link", "Phi_link component weight (default 0.40)"),
+    ):
+        ap.add_argument(
+            f"--{_name}", type=float, default=None, help=f"{_help}; inside Phi, PBRS-safe"
+        )
     ap.add_argument(
         "--w-relay",
         type=float,
@@ -695,6 +715,9 @@ def main() -> None:
             w_hold=a.w_hold,
             d_hold_m=a.d_hold,
             w_relay=a.w_relay,
+            w_approach=a.w_approach,
+            w_observe=a.w_observe,
+            w_link=a.w_link,
             lambda_var=a.lambda_var,
             log_every=a.log_every,
             checkpoint_every=a.checkpoint_every,
